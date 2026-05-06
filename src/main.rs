@@ -55,9 +55,10 @@ async fn main() -> Result<()> {
 
 fn print_response(response: Result<Response>) -> Result<()> {
     match response? {
-        Response::DaemonStatus { socket } => {
+        Response::DaemonStatus { socket, database } => {
             println!("pz daemon running");
             println!("socket: {socket}");
+            println!("db: {database}");
         }
         Response::DaemonStopping => println!("pz daemon stopped"),
         Response::NotImplemented { command } => println!("{command} is not implemented yet"),

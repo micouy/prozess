@@ -8,14 +8,16 @@ use tokio::{
 
 use crate::protocol::{Request, Response};
 use crate::runtime::RuntimePaths;
+use crate::store::{Store, StoreConfig};
 
 pub async fn start() -> Result<()> {
     let paths = RuntimePaths::default();
-    start_with_socket(paths.socket).await
+    start_with_paths(paths.socket, paths.database).await
 }
 
-pub async fn start_with_socket(socket_path: PathBuf) -> Result<()> {
+pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> Result<()> {
     prepare_socket(&socket_path).await?;
+    let store = Store::open(StoreConfig { database_path })?;
 
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind socket at {}", socket_path.display()))?;
@@ -25,7 +27,7 @@ pub async fn start_with_socket(socket_path: PathBuf) -> Result<()> {
 
     loop {
         let (stream, _) = listener.accept().await.context("failed to accept client")?;
-        let should_stop = handle_connection(stream, &socket_path).await?;
+        let should_stop = handle_connection(stream, &socket_path, &store).await?;
 
         if should_stop {
             break;
@@ -57,7 +59,7 @@ async fn prepare_socket(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(stream: UnixStream, socket_path: &Path) -> Result<bool> {
+async fn handle_connection(stream: UnixStream, socket_path: &Path, store: &Store) -> Result<bool> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -70,7 +72,7 @@ async fn handle_connection(stream: UnixStream, socket_path: &Path) -> Result<boo
     let request: Request =
         serde_json::from_str(&line).context("failed to decode client request")?;
     let should_stop = matches!(request, Request::DaemonStop);
-    let response = response_for(request, socket_path);
+    let response = response_for(request, socket_path, store.database_path());
     let response = serde_json::to_vec(&response).context("failed to encode response")?;
 
     writer
@@ -85,10 +87,11 @@ async fn handle_connection(stream: UnixStream, socket_path: &Path) -> Result<boo
     Ok(should_stop)
 }
 
-fn response_for(request: Request, socket_path: &Path) -> Response {
+fn response_for(request: Request, socket_path: &Path, database_path: &Path) -> Response {
     match request {
         Request::DaemonStatus => Response::DaemonStatus {
             socket: socket_path.display().to_string(),
+            database: database_path.display().to_string(),
         },
         Request::DaemonStop => Response::DaemonStopping,
         other => Response::NotImplemented {
@@ -112,14 +115,16 @@ mod tests {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
         let server_socket = socket.clone();
-        let server = tokio::spawn(async move { start_with_socket(server_socket).await });
+        let database = dir.path().join("pz.sqlite");
+        let expected_database = database.display().to_string();
+        let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
         let client = Client::for_socket(socket.clone());
 
         wait_for_socket(&socket).await?;
 
         let status = client.send(Request::DaemonStatus).await?;
         assert!(
-            matches!(status, Response::DaemonStatus { socket: ref path } if path == &socket.display().to_string())
+            matches!(status, Response::DaemonStatus { socket: ref path, database: ref db } if path == &socket.display().to_string() && db == &expected_database)
         );
 
         let stopping = client.send(Request::DaemonStop).await?;
@@ -136,7 +141,8 @@ mod tests {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
         let server_socket = socket.clone();
-        let server = tokio::spawn(async move { start_with_socket(server_socket).await });
+        let database = dir.path().join("pz.sqlite");
+        let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
         let client = Client::for_socket(socket.clone());
 
         wait_for_socket(&socket).await?;

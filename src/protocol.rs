@@ -27,7 +27,7 @@ impl Request {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
-    DaemonStatus { socket: String },
+    DaemonStatus { socket: String, database: String },
     DaemonStopping,
     NotImplemented { command: String },
 }
