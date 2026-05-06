@@ -20,14 +20,21 @@ impl Supervisor {
         }
 
         let cwd = env::current_dir().context("failed to get current directory")?;
-        let mut child = Command::new(program)
+        let spawn_result = Command::new(program)
             .args(args)
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
-            .with_context(|| format!("failed to spawn {}", command.join(" ")))?;
+            .spawn();
+        let mut child = match spawn_result {
+            Ok(child) => child,
+            Err(error) => {
+                let message = format!("failed to spawn {}: {error}", command.join(" "));
+                let _ = store.insert_failed_process(&command, &cwd, &message);
+                bail!(message);
+            }
+        };
         let pid = child.id().context("spawned process did not expose a pid")?;
         let process = store.insert_process(&command, &cwd, pid)?;
         let process_id = process.id;

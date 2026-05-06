@@ -38,6 +38,9 @@ pub enum Response {
     NotImplemented {
         command: String,
     },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -61,6 +64,7 @@ pub struct ProcessSummary {
     pub status: ProcessStatus,
     pub pid: Option<u32>,
     pub exit_code: Option<i32>,
+    pub error_message: Option<String>,
     pub command: Vec<String>,
 }
 

@@ -134,7 +134,12 @@ async fn handle_connection(
     let request: Request =
         serde_json::from_str(&line).context("failed to decode client request")?;
     let should_stop = matches!(request, Request::DaemonStop);
-    let response = response_for(request, socket_path, store, supervisor)?;
+    let response = match response_for(request, socket_path, store, supervisor) {
+        Ok(response) => response,
+        Err(error) => Response::Error {
+            message: error.to_string(),
+        },
+    };
     let response = serde_json::to_vec(&response).context("failed to encode response")?;
 
     writer
@@ -260,6 +265,43 @@ mod tests {
         assert_eq!(process.status, crate::protocol::ProcessStatus::Running);
 
         wait_for_process_exit(&database, process.id).await?;
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_survives_failed_spawn() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::Spawn {
+                command: vec!["/definitely/not/a/real/pz-test-command".to_owned()],
+            })
+            .await?;
+        assert!(
+            matches!(response, Response::Error { message } if message.contains("failed to spawn"))
+        );
+
+        let response = client.send(Request::ListProcesses).await?;
+        let Response::ProcessList(processes) = response else {
+            bail!("expected process list response");
+        };
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].status, crate::protocol::ProcessStatus::Failed);
+        assert!(processes[0].error_message.is_some());
+
+        let status = client.send(Request::DaemonStatus).await?;
+        assert!(matches!(status, Response::DaemonStatus { .. }));
 
         client.send(Request::DaemonStop).await?;
         server.await??;

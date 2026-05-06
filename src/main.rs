@@ -6,7 +6,7 @@ mod server;
 mod store;
 mod supervisor;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 
 use crate::cli::{Cli, Command, DaemonCommand, LogStream};
@@ -74,6 +74,7 @@ fn print_response(response: Result<Response>) -> Result<()> {
         }
         Response::ProcessList(processes) => print_process_list(&processes),
         Response::NotImplemented { command } => println!("{command} is not implemented yet"),
+        Response::Error { message } => bail!(message),
     }
 
     Ok(())
@@ -81,7 +82,7 @@ fn print_response(response: Result<Response>) -> Result<()> {
 
 fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
     println!(
-        "{:<3} {:<8} {:<6} {:<5} COMMAND",
+        "{:<3} {:<8} {:<6} {:<5} COMMAND / ERROR",
         "ID", "STATUS", "PID", "EXIT"
     );
 
@@ -95,13 +96,15 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
             .map(|exit| exit.to_string())
             .unwrap_or_else(|| "-".to_owned());
 
+        let command = if let Some(error) = &process.error_message {
+            format!("{} ({error})", process.command.join(" "))
+        } else {
+            process.command.join(" ")
+        };
+
         println!(
             "{:<3} {:<8} {:<6} {:<5} {}",
-            process.id,
-            process.status,
-            pid,
-            exit,
-            process.command.join(" ")
+            process.id, process.status, pid, exit, command
         );
     }
 }

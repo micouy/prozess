@@ -65,6 +65,37 @@ impl Store {
             status: ProcessStatus::Running,
             pid: Some(pid),
             exit_code: None,
+            error_message: None,
+            command: command.to_vec(),
+        })
+    }
+
+    pub fn insert_failed_process(
+        &self,
+        command: &[String],
+        cwd: &Path,
+        error_message: &str,
+    ) -> Result<ProcessSummary> {
+        let connection = self.connect()?;
+        let command_json = serde_json::to_string(command).context("failed to encode command")?;
+        let cwd = cwd.display().to_string();
+
+        connection
+            .execute(
+                "
+                INSERT INTO processes (command, cwd, status, error_message, finished_at)
+                VALUES (?1, ?2, 'failed', ?3, CURRENT_TIMESTAMP)
+                ",
+                params![command_json, cwd, error_message],
+            )
+            .context("failed to insert failed process")?;
+
+        Ok(ProcessSummary {
+            id: connection.last_insert_rowid(),
+            status: ProcessStatus::Failed,
+            pid: None,
+            exit_code: None,
+            error_message: Some(error_message.to_owned()),
             command: command.to_vec(),
         })
     }
@@ -92,7 +123,7 @@ impl Store {
 
         connection
             .query_row(
-                "SELECT id, status, pid, exit_code, command FROM processes WHERE id = ?1",
+                "SELECT id, status, pid, exit_code, command, error_message FROM processes WHERE id = ?1",
                 [id],
                 process_summary_from_row,
             )
@@ -104,7 +135,7 @@ impl Store {
         let mut statement = connection
             .prepare(
                 "
-                SELECT id, status, pid, exit_code, command
+                SELECT id, status, pid, exit_code, command, error_message
                 FROM processes
                 ORDER BY id DESC
                 ",
@@ -152,6 +183,7 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         status: parse_status(row.get::<_, String>(1)?.as_str()),
         pid: row.get(2)?,
         exit_code: row.get(3)?,
+        error_message: row.get(5)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
                 4,
@@ -176,6 +208,7 @@ fn migrate(connection: &Connection) -> Result<()> {
                 status TEXT NOT NULL,
                 pid INTEGER,
                 exit_code INTEGER,
+                error_message TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 finished_at TEXT
@@ -192,7 +225,26 @@ fn migrate(connection: &Connection) -> Result<()> {
         )
         .context("failed to initialize database schema")?;
 
+    if !column_exists(connection, "processes", "error_message")? {
+        connection
+            .execute("ALTER TABLE processes ADD COLUMN error_message TEXT", [])
+            .context("failed to add process error_message column")?;
+    }
+
     Ok(())
+}
+
+fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .context("failed to inspect table schema")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("failed to query table schema")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read table schema")?;
+
+    Ok(columns.iter().any(|name| name == column))
 }
 
 #[cfg(test)]
@@ -232,12 +284,37 @@ mod tests {
         assert_eq!(process.status, ProcessStatus::Running);
         assert_eq!(process.pid, Some(1234));
         assert_eq!(process.exit_code, None);
+        assert_eq!(process.error_message, None);
         assert_eq!(process.command, command);
 
         store.mark_process_finished(process.id, Some(0))?;
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, ProcessStatus::Exited);
         assert_eq!(process.exit_code, Some(0));
+        assert_eq!(process.error_message, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn insert_failed_process_metadata() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let command = vec!["/missing".to_owned()];
+
+        let process = store.insert_failed_process(&command, dir.path(), "not found")?;
+        assert_eq!(process.id, 1);
+        assert_eq!(process.status, ProcessStatus::Failed);
+        assert_eq!(process.pid, None);
+        assert_eq!(process.exit_code, None);
+        assert_eq!(process.error_message, Some("not found".to_owned()));
+        assert_eq!(process.command, command);
+
+        let process = store.get_process(process.id)?;
+        assert_eq!(process.status, ProcessStatus::Failed);
+        assert_eq!(process.error_message, Some("not found".to_owned()));
 
         Ok(())
     }
