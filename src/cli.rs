@@ -23,6 +23,9 @@ pub enum Command {
     /// Stop a running process.
     Stop(StopArgs),
 
+    /// Add, replace, or clear a process timeout.
+    Timeout(TimeoutArgs),
+
     /// Wait for a process to finish.
     Wait { process: String },
 
@@ -73,6 +76,10 @@ pub struct RunArgs {
     #[arg(long = "env")]
     pub env: Vec<String>,
 
+    /// Stop the process if it is still running after this duration, e.g. 30s, 5m, 1h.
+    #[arg(long)]
+    pub timeout: Option<String>,
+
     /// Command and arguments to run. Use `--` before commands with flags.
     #[arg(required = true, trailing_var_arg = true)]
     pub command: Vec<String>,
@@ -85,6 +92,14 @@ pub struct StopArgs {
     /// Send SIGKILL instead of SIGTERM.
     #[arg(short, long)]
     pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TimeoutArgs {
+    pub process: String,
+
+    /// Duration like 30s, 5m, 1h, or `clear` to remove the timeout.
+    pub timeout: String,
 }
 
 #[derive(Debug, Args)]

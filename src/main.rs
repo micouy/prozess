@@ -54,6 +54,14 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
+        Command::Timeout(args) => print_response(
+            Client::new()
+                .send(Request::SetTimeout {
+                    selector: process_selector(&args.process),
+                    timeout_ms: parse_timeout_arg(&args.timeout)?,
+                })
+                .await,
+        ),
         Command::Wait { process } => wait_process(process_selector(&process)).await,
         Command::Ps => print_response(Client::new().send(Request::ListProcesses).await),
         Command::Show { process } => print_response(
@@ -89,7 +97,9 @@ async fn wait_process(selector: ProcessSelector) -> Result<()> {
     match response {
         Response::WaitedProcess(process) => match process.status {
             ProcessStatus::Exited => std::process::exit(process.exit_code.unwrap_or(1)),
-            ProcessStatus::Killed | ProcessStatus::Failed => std::process::exit(1),
+            ProcessStatus::Killed | ProcessStatus::Failed | ProcessStatus::TimedOut => {
+                std::process::exit(1)
+            }
             ProcessStatus::Running => bail!("process is still running"),
         },
         Response::Error { message } => bail!(message),
@@ -135,12 +145,41 @@ fn run_spec(args: RunArgs) -> Result<RunSpec> {
 
     Ok(RunSpec {
         name: args.name,
+        timeout_ms: args.timeout.as_deref().map(parse_duration_ms).transpose()?,
         command: args.command,
         cwd: cwd.display().to_string(),
         inherit_env: config.run.inherit_env || args.inherit_env,
         env_files,
         env,
     })
+}
+
+fn parse_timeout_arg(value: &str) -> Result<Option<u64>> {
+    if value == "clear" {
+        Ok(None)
+    } else {
+        parse_duration_ms(value).map(Some)
+    }
+}
+
+fn parse_duration_ms(value: &str) -> Result<u64> {
+    let Some(unit) = value.chars().last() else {
+        bail!("timeout cannot be empty");
+    };
+    let number = &value[..value.len() - unit.len_utf8()];
+    let amount = number
+        .parse::<u64>()
+        .with_context(|| format!("invalid timeout duration {value:?}"))?;
+    let multiplier = match unit {
+        's' => 1_000,
+        'm' => 60_000,
+        'h' => 3_600_000,
+        _ => bail!("invalid timeout unit {unit:?}: expected s, m, or h"),
+    };
+
+    amount
+        .checked_mul(multiplier)
+        .context("timeout duration is too large")
 }
 
 fn process_selector(value: &str) -> ProcessSelector {
@@ -234,11 +273,22 @@ fn print_response(response: Result<Response>) -> Result<()> {
                 println!("name: {name}");
             }
             println!("status: {}", process.status);
+            if let Some(timeout_ms) = process.timeout_ms {
+                println!("timeout: {}", format_duration_ms(timeout_ms));
+            }
             println!("command: {}", process.command.join(" "));
         }
         Response::StoppedProcess { id, signal } => {
             println!("stopped process {id}");
             println!("signal: {signal}");
+        }
+        Response::TimeoutUpdated { id, timeout_ms } => {
+            if let Some(timeout_ms) = timeout_ms {
+                println!("timeout set for process {id}");
+                println!("timeout: {}", format_duration_ms(timeout_ms));
+            } else {
+                println!("timeout cleared for process {id}");
+            }
         }
         Response::WaitedProcess(process) => print_process_details(&process),
         Response::ProcessList(processes) => print_process_list(&processes),
@@ -291,6 +341,9 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
     println!("exit: {exit}");
     println!("command: {}", process.command.join(" "));
     println!("cwd: {}", process.cwd);
+    if let Some(timeout_ms) = process.timeout_ms {
+        println!("timeout: {}", format_duration_ms(timeout_ms));
+    }
     println!("inherit env: {}", process.env.inherit_env);
 
     if !process.env.env_files.is_empty() {
@@ -357,9 +410,22 @@ impl std::fmt::Display for crate::protocol::ProcessStatus {
             Self::Exited => "exited",
             Self::Failed => "failed",
             Self::Killed => "killed",
+            Self::TimedOut => "timed_out",
         };
 
         formatter.write_str(status)
+    }
+}
+
+fn format_duration_ms(timeout_ms: u64) -> String {
+    if timeout_ms % 3_600_000 == 0 {
+        format!("{}h", timeout_ms / 3_600_000)
+    } else if timeout_ms % 60_000 == 0 {
+        format!("{}m", timeout_ms / 60_000)
+    } else if timeout_ms % 1_000 == 0 {
+        format!("{}s", timeout_ms / 1_000)
+    } else {
+        format!("{timeout_ms}ms")
     }
 }
 

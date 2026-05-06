@@ -430,6 +430,7 @@ mod tests {
 
         let spec = RunSpec {
             name: Some("env-test".to_owned()),
+            timeout_ms: None,
             command: vec!["/usr/bin/env".to_owned()],
             cwd: dir.path().display().to_string(),
             inherit_env: false,
@@ -504,6 +505,96 @@ mod tests {
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, crate::protocol::ProcessStatus::Killed);
 
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_times_out_running_process() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path());
+        spec.timeout_ms = Some(50);
+        let response = client.send(Request::Spawn { spec }).await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        let response = client
+            .send(Request::WaitProcess {
+                selector: ProcessSelector::Id(process.id),
+            })
+            .await?;
+        let Response::WaitedProcess(process) = response else {
+            bail!("expected waited process response");
+        };
+        assert_eq!(process.status, crate::protocol::ProcessStatus::TimedOut);
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_can_set_and_clear_timeout() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path()),
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        let response = client
+            .send(Request::SetTimeout {
+                selector: ProcessSelector::Id(process.id),
+                timeout_ms: Some(10_000),
+            })
+            .await?;
+        assert!(
+            matches!(response, Response::TimeoutUpdated { id, timeout_ms: Some(10_000) } if id == process.id)
+        );
+
+        let response = client
+            .send(Request::SetTimeout {
+                selector: ProcessSelector::Id(process.id),
+                timeout_ms: None,
+            })
+            .await?;
+        assert!(
+            matches!(response, Response::TimeoutUpdated { id, timeout_ms: None } if id == process.id)
+        );
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: true,
+            })
+            .await?;
         client.send(Request::DaemonStop).await?;
         server.await??;
 
@@ -655,6 +746,7 @@ mod tests {
     fn test_run_spec(command: Vec<String>, cwd: &Path) -> RunSpec {
         RunSpec {
             name: None,
+            timeout_ms: None,
             command,
             cwd: cwd.display().to_string(),
             inherit_env: false,

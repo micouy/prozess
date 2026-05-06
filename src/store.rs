@@ -7,6 +7,12 @@ use crate::protocol::{
     OutputChunk, OutputStream, ProcessDetails, ProcessEnvSummary, ProcessStatus, ProcessSummary,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeoutSpec {
+    pub duration_ms: u64,
+    pub deadline_ms: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
     pub database_path: PathBuf,
@@ -42,6 +48,7 @@ impl Store {
         &self.database_path
     }
 
+    #[cfg(test)]
     pub fn insert_process(
         &self,
         name: Option<&str>,
@@ -53,6 +60,31 @@ impl Store {
         env_files: &[String],
         env_keys: &[String],
     ) -> Result<ProcessSummary> {
+        self.insert_process_with_timeout(
+            name,
+            command,
+            cwd,
+            pid,
+            pgid,
+            inherit_env,
+            env_files,
+            env_keys,
+            None,
+        )
+    }
+
+    pub fn insert_process_with_timeout(
+        &self,
+        name: Option<&str>,
+        command: &[String],
+        cwd: &Path,
+        pid: u32,
+        pgid: u32,
+        inherit_env: bool,
+        env_files: &[String],
+        env_keys: &[String],
+        timeout: Option<TimeoutSpec>,
+    ) -> Result<ProcessSummary> {
         let connection = self.connect()?;
         ensure_active_name_available(&connection, name)?;
         let command_json = serde_json::to_string(command).context("failed to encode command")?;
@@ -60,14 +92,16 @@ impl Store {
             serde_json::to_string(env_files).context("failed to encode env files")?;
         let env_keys_json = serde_json::to_string(env_keys).context("failed to encode env keys")?;
         let cwd = cwd.display().to_string();
+        let timeout_ms = timeout.map(|timeout| timeout.duration_ms);
+        let timeout_at_ms = timeout.map(|timeout| timeout.deadline_ms);
 
         connection
             .execute(
                 "
                 INSERT INTO processes (
-                    name, command, cwd, status, pid, pgid, inherit_env, env_files, env_keys, started_at
+                    name, command, cwd, status, pid, pgid, inherit_env, env_files, env_keys, timeout_ms, timeout_at_ms, started_at
                 )
-                VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP)
+                VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP)
                 ",
                 params![
                     name,
@@ -77,7 +111,9 @@ impl Store {
                     pgid,
                     inherit_env,
                     env_files_json,
-                    env_keys_json
+                    env_keys_json,
+                    timeout_ms,
+                    timeout_at_ms,
                 ],
             )
             .context("failed to insert process")?;
@@ -90,6 +126,8 @@ impl Store {
             pgid: Some(pgid),
             exit_code: None,
             error_message: None,
+            timeout_ms,
+            timeout_at_ms,
             command: command.to_vec(),
             env: ProcessEnvSummary {
                 inherit_env,
@@ -136,6 +174,8 @@ impl Store {
             pgid: None,
             exit_code: None,
             error_message: Some(error_message.to_owned()),
+            timeout_ms: None,
+            timeout_at_ms: None,
             command: command.to_vec(),
             env: ProcessEnvSummary {
                 inherit_env,
@@ -179,12 +219,48 @@ impl Store {
         Ok(())
     }
 
+    pub fn mark_process_timed_out(&self, id: i64) -> Result<()> {
+        let connection = self.connect()?;
+
+        connection
+            .execute(
+                "
+                UPDATE processes
+                SET status = 'timed_out', finished_at = CURRENT_TIMESTAMP
+                WHERE id = ?1 AND status = 'running'
+                ",
+                [id],
+            )
+            .context("failed to mark process timed out")?;
+
+        Ok(())
+    }
+
+    pub fn set_timeout(&self, id: i64, timeout: Option<TimeoutSpec>) -> Result<()> {
+        let connection = self.connect()?;
+        let timeout_ms = timeout.map(|timeout| timeout.duration_ms);
+        let timeout_at_ms = timeout.map(|timeout| timeout.deadline_ms);
+
+        connection
+            .execute(
+                "
+                UPDATE processes
+                SET timeout_ms = ?1, timeout_at_ms = ?2
+                WHERE id = ?3
+                ",
+                params![timeout_ms, timeout_at_ms, id],
+            )
+            .context("failed to update process timeout")?;
+
+        Ok(())
+    }
+
     pub fn get_process(&self, id: i64) -> Result<ProcessSummary> {
         let connection = self.connect()?;
 
         connection
             .query_row(
-                "SELECT id, name, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys FROM processes WHERE id = ?1",
+                "SELECT id, name, status, pid, pgid, exit_code, command, error_message, timeout_ms, timeout_at_ms, inherit_env, env_files, env_keys FROM processes WHERE id = ?1",
                 [id],
                 process_summary_from_row,
             )
@@ -196,7 +272,7 @@ impl Store {
         let mut statement = connection
             .prepare(
                 "
-                SELECT id, name, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys
+                SELECT id, name, status, pid, pgid, exit_code, command, error_message, timeout_ms, timeout_at_ms, inherit_env, env_files, env_keys
                 FROM processes
                 ORDER BY id DESC
                 ",
@@ -218,7 +294,7 @@ impl Store {
         connection
             .query_row(
                 "
-                SELECT id, name, status, pid, pgid, exit_code, command, error_message, cwd, inherit_env, env_files, env_keys
+                SELECT id, name, status, pid, pgid, exit_code, command, error_message, timeout_ms, timeout_at_ms, cwd, inherit_env, env_files, env_keys
                 FROM processes
                 WHERE id = ?1
                 ",
@@ -344,6 +420,7 @@ fn parse_status(status: &str) -> ProcessStatus {
         "exited" => ProcessStatus::Exited,
         "failed" => ProcessStatus::Failed,
         "killed" => ProcessStatus::Killed,
+        "timed_out" => ProcessStatus::TimedOut,
         _ => ProcessStatus::Failed,
     }
 }
@@ -403,6 +480,8 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         pgid: row.get(4)?,
         exit_code: row.get(5)?,
         error_message: row.get(7)?,
+        timeout_ms: row.get(8)?,
+        timeout_at_ms: row.get(9)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
                 6,
@@ -410,7 +489,7 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
                 Box::new(error),
             )
         })?,
-        env: env_summary_from_row(row, 8)?,
+        env: env_summary_from_row(row, 10)?,
     })
 }
 
@@ -425,6 +504,8 @@ fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         pgid: row.get(4)?,
         exit_code: row.get(5)?,
         error_message: row.get(7)?,
+        timeout_ms: row.get(8)?,
+        timeout_at_ms: row.get(9)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
                 6,
@@ -432,8 +513,8 @@ fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
                 Box::new(error),
             )
         })?,
-        cwd: row.get(8)?,
-        env: env_summary_from_row(row, 9)?,
+        cwd: row.get(10)?,
+        env: env_summary_from_row(row, 11)?,
     })
 }
 
@@ -480,6 +561,8 @@ fn migrate(connection: &Connection) -> Result<()> {
                 pgid INTEGER,
                 exit_code INTEGER,
                 error_message TEXT,
+                timeout_ms INTEGER,
+                timeout_at_ms INTEGER,
                 inherit_env INTEGER NOT NULL DEFAULT 0,
                 env_files TEXT NOT NULL DEFAULT '[]',
                 env_keys TEXT NOT NULL DEFAULT '[]',
@@ -515,6 +598,18 @@ fn migrate(connection: &Connection) -> Result<()> {
         connection
             .execute("ALTER TABLE processes ADD COLUMN pgid INTEGER", [])
             .context("failed to add process pgid column")?;
+    }
+
+    if !column_exists(connection, "processes", "timeout_ms")? {
+        connection
+            .execute("ALTER TABLE processes ADD COLUMN timeout_ms INTEGER", [])
+            .context("failed to add process timeout_ms column")?;
+    }
+
+    if !column_exists(connection, "processes", "timeout_at_ms")? {
+        connection
+            .execute("ALTER TABLE processes ADD COLUMN timeout_at_ms INTEGER", [])
+            .context("failed to add process timeout_at_ms column")?;
     }
 
     if !column_exists(connection, "processes", "inherit_env")? {

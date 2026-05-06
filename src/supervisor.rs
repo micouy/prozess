@@ -66,7 +66,7 @@ impl Supervisor {
         let pid = child.id().context("spawned process did not expose a pid")?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let process = store.insert_process(
+        let process = store.insert_process_with_timeout(
             spec.name.as_deref(),
             &spec.command,
             &cwd,
@@ -75,6 +75,7 @@ impl Supervisor {
             spec.inherit_env,
             &spec.env_files,
             &env_keys,
+            None,
         )?;
         let process_id = process.id;
         let state = self.state.clone();

@@ -13,6 +13,10 @@ pub enum Request {
         selector: ProcessSelector,
         force: bool,
     },
+    SetTimeout {
+        selector: ProcessSelector,
+        timeout_ms: Option<u64>,
+    },
     WaitProcess {
         selector: ProcessSelector,
     },
@@ -36,6 +40,7 @@ pub enum ProcessSelector {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSpec {
     pub name: Option<String>,
+    pub timeout_ms: Option<u64>,
     pub command: Vec<String>,
     pub cwd: String,
     pub inherit_env: bool,
@@ -63,6 +68,7 @@ impl Request {
             Self::DaemonStop => "daemon stop",
             Self::Spawn { .. } => "run",
             Self::StopProcess { .. } => "stop",
+            Self::SetTimeout { .. } => "timeout",
             Self::WaitProcess { .. } => "wait",
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
@@ -83,6 +89,10 @@ pub enum Response {
     StoppedProcess {
         id: i64,
         signal: StopSignal,
+    },
+    TimeoutUpdated {
+        id: i64,
+        timeout_ms: Option<u64>,
     },
     WaitedProcess(ProcessDetails),
     ProcessList(Vec<ProcessSummary>),
@@ -119,6 +129,7 @@ pub enum ProcessStatus {
     Exited,
     Failed,
     Killed,
+    TimedOut,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +141,8 @@ pub struct ProcessSummary {
     pub pgid: Option<u32>,
     pub exit_code: Option<i32>,
     pub error_message: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub timeout_at_ms: Option<i64>,
     pub command: Vec<String>,
     pub env: ProcessEnvSummary,
 }
@@ -143,6 +156,8 @@ pub struct ProcessDetails {
     pub pgid: Option<u32>,
     pub exit_code: Option<i32>,
     pub error_message: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub timeout_at_ms: Option<i64>,
     pub command: Vec<String>,
     pub cwd: String,
     pub env: ProcessEnvSummary,
