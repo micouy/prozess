@@ -6,10 +6,18 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     DaemonStatus,
     DaemonStop,
-    Spawn { command: Vec<String> },
+    Spawn {
+        command: Vec<String>,
+    },
     ListProcesses,
-    ShowProcess { id: i64 },
-    ReadLogs { id: i64, stream: OutputStream },
+    ShowProcess {
+        id: i64,
+    },
+    ReadLogs {
+        id: i64,
+        stream: OutputStream,
+        after_id: Option<i64>,
+    },
 }
 
 impl Request {
@@ -51,6 +59,7 @@ pub enum OutputStream {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputChunk {
+    pub id: i64,
     pub stream: OutputStream,
     pub data: Vec<u8>,
 }

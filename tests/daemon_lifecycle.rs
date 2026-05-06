@@ -59,6 +59,51 @@ fn daemon_start_runs_in_background() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn logs_follow_prints_output_and_exits() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--", "/bin/echo", "followed"],
+    )?;
+    let logs = run_pz(&binary, &runtime_dir, &state_dir, &["logs", "1", "-f"])?;
+    assert_eq!(String::from_utf8(logs.stdout)?, "followed\n");
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+fn run_pz(
+    binary: &std::path::Path,
+    runtime_dir: &tempfile::TempDir,
+    state_dir: &tempfile::TempDir,
+    args: &[&str],
+) -> Result<std::process::Output> {
+    let output = Command::new(binary)
+        .args(args)
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .output()
+        .with_context(|| format!("failed to run pz {}", args.join(" ")))?;
+
+    assert!(
+        output.status.success(),
+        "pz {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    Ok(output)
+}
+
 fn wait_for_socket_removal(socket: std::path::PathBuf) -> Result<()> {
     for _ in 0..100 {
         if !socket.exists() {

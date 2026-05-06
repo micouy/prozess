@@ -13,7 +13,7 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command, DaemonCommand, LogStream};
 use crate::client::Client;
-use crate::protocol::{OutputStream, Request, Response};
+use crate::protocol::{OutputChunk, OutputStream, ProcessStatus, Request, Response};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -41,19 +41,56 @@ async fn main() -> Result<()> {
         }
         Command::Logs(args) => {
             if args.follow {
-                println!("log following is not implemented yet");
+                follow_logs(args.id, args.channel.into()).await
+            } else {
+                print_response(
+                    Client::new()
+                        .send(Request::ReadLogs {
+                            id: args.id,
+                            stream: args.channel.into(),
+                            after_id: None,
+                        })
+                        .await,
+                )
             }
-
-            print_response(
-                Client::new()
-                    .send(Request::ReadLogs {
-                        id: args.id,
-                        stream: args.channel.into(),
-                    })
-                    .await,
-            )
         }
     }
+}
+
+async fn follow_logs(id: i64, stream: OutputStream) -> Result<()> {
+    let client = Client::new();
+    let mut after_id = None;
+
+    loop {
+        let chunks = match client
+            .send(Request::ReadLogs {
+                id,
+                stream,
+                after_id,
+            })
+            .await?
+        {
+            Response::Output(chunks) => chunks,
+            Response::Error { message } => bail!(message),
+            _ => bail!("daemon returned an unexpected logs response"),
+        };
+        let printed_any = !chunks.is_empty();
+        after_id = print_output(&chunks)?.or(after_id);
+
+        let is_running = match client.send(Request::ShowProcess { id }).await? {
+            Response::ProcessDetails(process) => process.status == ProcessStatus::Running,
+            Response::Error { message } => bail!(message),
+            _ => bail!("daemon returned an unexpected process response"),
+        };
+
+        if !is_running && !printed_any {
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    Ok(())
 }
 
 fn print_response(response: Result<Response>) -> Result<()> {
@@ -76,23 +113,27 @@ fn print_response(response: Result<Response>) -> Result<()> {
         }
         Response::ProcessList(processes) => print_process_list(&processes),
         Response::ProcessDetails(process) => print_process_details(&process),
-        Response::Output(chunks) => print_output(&chunks)?,
+        Response::Output(chunks) => {
+            print_output(&chunks)?;
+        }
         Response::Error { message } => bail!(message),
     }
 
     Ok(())
 }
 
-fn print_output(chunks: &[crate::protocol::OutputChunk]) -> Result<()> {
+fn print_output(chunks: &[OutputChunk]) -> Result<Option<i64>> {
     let mut stdout = std::io::stdout().lock();
+    let mut last_id = None;
 
     for chunk in chunks {
         stdout
             .write_all(&chunk.data)
             .context("failed to write output")?;
+        last_id = Some(chunk.id);
     }
 
-    Ok(())
+    Ok(last_id)
 }
 
 fn print_process_details(process: &crate::protocol::ProcessDetails) {

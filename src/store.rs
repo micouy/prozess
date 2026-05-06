@@ -188,23 +188,28 @@ impl Store {
         Ok(())
     }
 
-    pub fn read_output(&self, process_id: i64, stream: OutputStream) -> Result<Vec<OutputChunk>> {
+    pub fn read_output(
+        &self,
+        process_id: i64,
+        stream: OutputStream,
+        after_id: Option<i64>,
+    ) -> Result<Vec<OutputChunk>> {
         let connection = self.connect()?;
         let (sql, stream_filter) = match stream {
             OutputStream::All => (
                 "
-                SELECT stream, chunk
+                SELECT id, stream, chunk
                 FROM process_output
-                WHERE process_id = ?1
+                WHERE process_id = ?1 AND id > ?2
                 ORDER BY id ASC
                 ",
                 None,
             ),
             OutputStream::Stdout | OutputStream::Stderr => (
                 "
-                SELECT stream, chunk
+                SELECT id, stream, chunk
                 FROM process_output
-                WHERE process_id = ?1 AND stream = ?2
+                WHERE process_id = ?1 AND id > ?2 AND stream = ?3
                 ORDER BY id ASC
                 ",
                 Some(stream_name(stream)),
@@ -216,12 +221,18 @@ impl Store {
 
         let chunks = if let Some(stream_filter) = stream_filter {
             statement
-                .query_map(params![process_id, stream_filter], output_chunk_from_row)
+                .query_map(
+                    params![process_id, after_id.unwrap_or(0), stream_filter],
+                    output_chunk_from_row,
+                )
                 .context("failed to read output")?
                 .collect::<rusqlite::Result<Vec<_>>>()
         } else {
             statement
-                .query_map([process_id], output_chunk_from_row)
+                .query_map(
+                    params![process_id, after_id.unwrap_or(0)],
+                    output_chunk_from_row,
+                )
                 .context("failed to read output")?
                 .collect::<rusqlite::Result<Vec<_>>>()
         }
@@ -272,8 +283,9 @@ fn stream_name(stream: OutputStream) -> &'static str {
 
 fn output_chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutputChunk> {
     Ok(OutputChunk {
-        stream: parse_stream(row.get::<_, String>(0)?.as_str()),
-        data: row.get(1)?,
+        id: row.get(0)?,
+        stream: parse_stream(row.get::<_, String>(1)?.as_str()),
+        data: row.get(2)?,
     })
 }
 
@@ -493,14 +505,20 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"out\n")?;
         store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;
 
-        let chunks = store.read_output(process.id, OutputStream::All)?;
+        let chunks = store.read_output(process.id, OutputStream::All, None)?;
         assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].id, 1);
+        assert_eq!(chunks[1].id, 2);
         assert_eq!(chunks[0].data, b"out\n");
         assert_eq!(chunks[1].data, b"err\n");
 
-        let chunks = store.read_output(process.id, OutputStream::Stderr)?;
+        let chunks = store.read_output(process.id, OutputStream::Stderr, None)?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"err\n");
+
+        let chunks = store.read_output(process.id, OutputStream::All, Some(1))?;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].id, 2);
 
         Ok(())
     }

@@ -170,7 +170,11 @@ fn response_for(
         Request::Spawn { command } => Response::Spawned(supervisor.spawn(store.clone(), command)?),
         Request::ListProcesses => Response::ProcessList(store.list_processes()?),
         Request::ShowProcess { id } => Response::ProcessDetails(store.get_process_details(id)?),
-        Request::ReadLogs { id, stream } => Response::Output(store.read_output(id, stream)?),
+        Request::ReadLogs {
+            id,
+            stream,
+            after_id,
+        } => Response::Output(store.read_output(id, stream, after_id)?),
     };
 
     Ok(response)
@@ -303,6 +307,7 @@ mod tests {
             .send(Request::ReadLogs {
                 id: process.id,
                 stream: crate::protocol::OutputStream::Stdout,
+                after_id: None,
             })
             .await?;
         let Response::Output(chunks) = response else {
@@ -411,6 +416,7 @@ mod tests {
             .send(Request::ReadLogs {
                 id: process.id,
                 stream: crate::protocol::OutputStream::Stdout,
+                after_id: None,
             })
             .await?;
         let Response::Output(chunks) = response else {
@@ -471,7 +477,7 @@ mod tests {
 
         for _ in 0..100 {
             let output = store
-                .read_output(id, stream)?
+                .read_output(id, stream, None)?
                 .into_iter()
                 .flat_map(|chunk| chunk.data)
                 .collect::<Vec<_>>();
