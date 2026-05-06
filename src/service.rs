@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::{
+    daemon_state::DaemonState,
     protocol::{Request, Response, StopSignal},
     store::Store,
     supervisor::Supervisor,
@@ -10,14 +11,21 @@ use crate::{
 pub struct Service {
     store: Store,
     supervisor: Supervisor,
+    state: DaemonState,
     socket_path: String,
 }
 
 impl Service {
-    pub fn new(store: Store, supervisor: Supervisor, socket_path: String) -> Self {
+    pub fn new(
+        store: Store,
+        supervisor: Supervisor,
+        state: DaemonState,
+        socket_path: String,
+    ) -> Self {
         Self {
             store,
             supervisor,
+            state,
             socket_path,
         }
     }
@@ -60,8 +68,11 @@ impl Service {
     ) -> Result<Response> {
         let id = self.store.resolve_process_id(selector)?;
         let process = self.store.get_process(id)?;
-        let pgid = process
-            .pgid
+        let pgid = self
+            .state
+            .process(id)
+            .map(|process| process.pgid)
+            .or(process.pgid)
             .or(process.pid)
             .context("process has no pid or process group to stop")?;
         let signal = if force {

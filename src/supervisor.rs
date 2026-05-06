@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use tokio::{io::AsyncReadExt, process::Command};
 
 use crate::{
-    daemon_state::{DaemonState, RuntimeProcess},
+    daemon_state::{DaemonState, RuntimeProcessMetadata},
     protocol::{OutputStream, ProcessSummary, RunSpec},
     store::Store,
 };
@@ -79,17 +79,10 @@ impl Supervisor {
         let process_id = process.id;
         let state = self.state.clone();
 
-        tokio::spawn({
-            let state = state.clone();
-            async move {
-                state
-                    .insert_process(RuntimeProcess {
-                        id: process_id,
-                        pid,
-                        pgid: pid,
-                    })
-                    .await;
-            }
+        state.insert_process(RuntimeProcessMetadata {
+            id: process_id,
+            pid,
+            pgid: pid,
         });
 
         if let Some(stdout) = stdout {
@@ -117,7 +110,7 @@ impl Supervisor {
             };
 
             let _ = store.mark_process_finished(process_id, exit_code);
-            state.remove_process(process_id).await;
+            state.finish_process(process_id, exit_code);
         });
 
         Ok(process)

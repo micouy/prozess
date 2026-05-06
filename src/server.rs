@@ -79,7 +79,8 @@ pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> R
     let state = DaemonState::default();
     let service = Service::new(
         store,
-        Supervisor::new(state),
+        Supervisor::new(state.clone()),
+        state,
         socket_path.display().to_string(),
     );
 
