@@ -107,6 +107,7 @@ fn response_for(
         },
         Request::DaemonStop => Response::DaemonStopping,
         Request::Spawn { command } => Response::Spawned(supervisor.spawn(store.clone(), command)?),
+        Request::ListProcesses => Response::ProcessList(store.list_processes()?),
         other => Response::NotImplemented {
             command: other.name().to_owned(),
         },
@@ -152,18 +153,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_returns_not_implemented_for_future_requests() -> Result<()> {
+    async fn daemon_lists_processes() -> Result<()> {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
         let server_socket = socket.clone();
         let database = dir.path().join("pz.sqlite");
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        store.insert_process(&["first".to_owned()], dir.path(), 111)?;
+        store.insert_process(&["second".to_owned()], dir.path(), 222)?;
         let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
         let client = Client::for_socket(socket.clone());
 
         wait_for_socket(&socket).await?;
 
         let response = client.send(Request::ListProcesses).await?;
-        assert!(matches!(response, Response::NotImplemented { command } if command == "ps"));
+        let Response::ProcessList(processes) = response else {
+            bail!("expected process list response");
+        };
+        assert_eq!(processes.len(), 2);
+        assert_eq!(processes[0].id, 2);
+        assert_eq!(processes[0].pid, Some(222));
 
         client.send(Request::DaemonStop).await?;
         server.await??;

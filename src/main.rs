@@ -66,10 +66,38 @@ fn print_response(response: Result<Response>) -> Result<()> {
             println!("status: {}", process.status);
             println!("command: {}", process.command.join(" "));
         }
+        Response::ProcessList(processes) => print_process_list(&processes),
         Response::NotImplemented { command } => println!("{command} is not implemented yet"),
     }
 
     Ok(())
+}
+
+fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
+    println!(
+        "{:<3} {:<8} {:<6} {:<5} COMMAND",
+        "ID", "STATUS", "PID", "EXIT"
+    );
+
+    for process in processes {
+        let pid = process
+            .pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        let exit = process
+            .exit_code
+            .map(|exit| exit.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+
+        println!(
+            "{:<3} {:<8} {:<6} {:<5} {}",
+            process.id,
+            process.status,
+            pid,
+            exit,
+            process.command.join(" ")
+        );
+    }
 }
 
 impl From<LogStream> for OutputStream {

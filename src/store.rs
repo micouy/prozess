@@ -63,6 +63,7 @@ impl Store {
         Ok(ProcessSummary {
             id: connection.last_insert_rowid(),
             status: ProcessStatus::Running,
+            pid: Some(pid),
             exit_code: None,
             command: command.to_vec(),
         })
@@ -91,25 +92,32 @@ impl Store {
 
         connection
             .query_row(
-                "SELECT id, status, exit_code, command FROM processes WHERE id = ?1",
+                "SELECT id, status, pid, exit_code, command FROM processes WHERE id = ?1",
                 [id],
-                |row| {
-                    let command: String = row.get(3)?;
-                    Ok(ProcessSummary {
-                        id: row.get(0)?,
-                        status: parse_status(row.get::<_, String>(1)?.as_str()),
-                        exit_code: row.get(2)?,
-                        command: serde_json::from_str(&command).map_err(|error| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                3,
-                                rusqlite::types::Type::Text,
-                                Box::new(error),
-                            )
-                        })?,
-                    })
-                },
+                process_summary_from_row,
             )
             .context("failed to get process")
+    }
+
+    pub fn list_processes(&self) -> Result<Vec<ProcessSummary>> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT id, status, pid, exit_code, command
+                FROM processes
+                ORDER BY id DESC
+                ",
+            )
+            .context("failed to prepare process list query")?;
+
+        let processes = statement
+            .query_map([], process_summary_from_row)
+            .context("failed to list processes")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read process list")?;
+
+        Ok(processes)
     }
 
     fn connect(&self) -> Result<Connection> {
@@ -126,7 +134,6 @@ impl Clone for Store {
     }
 }
 
-#[cfg(test)]
 fn parse_status(status: &str) -> ProcessStatus {
     match status {
         "running" => ProcessStatus::Running,
@@ -135,6 +142,24 @@ fn parse_status(status: &str) -> ProcessStatus {
         "killed" => ProcessStatus::Killed,
         _ => ProcessStatus::Failed,
     }
+}
+
+fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessSummary> {
+    let command: String = row.get(4)?;
+
+    Ok(ProcessSummary {
+        id: row.get(0)?,
+        status: parse_status(row.get::<_, String>(1)?.as_str()),
+        pid: row.get(2)?,
+        exit_code: row.get(3)?,
+        command: serde_json::from_str(&command).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+    })
 }
 
 fn migrate(connection: &Connection) -> Result<()> {
@@ -205,6 +230,7 @@ mod tests {
         let process = store.insert_process(&command, dir.path(), 1234)?;
         assert_eq!(process.id, 1);
         assert_eq!(process.status, ProcessStatus::Running);
+        assert_eq!(process.pid, Some(1234));
         assert_eq!(process.exit_code, None);
         assert_eq!(process.command, command);
 
@@ -212,6 +238,26 @@ mod tests {
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, ProcessStatus::Exited);
         assert_eq!(process.exit_code, Some(0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn list_processes_orders_newest_first() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+
+        store.insert_process(&["first".to_owned()], dir.path(), 111)?;
+        store.insert_process(&["second".to_owned()], dir.path(), 222)?;
+
+        let processes = store.list_processes()?;
+        assert_eq!(processes.len(), 2);
+        assert_eq!(processes[0].id, 2);
+        assert_eq!(processes[0].pid, Some(222));
+        assert_eq!(processes[0].command, vec!["second"]);
+        assert_eq!(processes[1].id, 1);
 
         Ok(())
     }

@@ -30,6 +30,7 @@ pub enum Response {
     DaemonStatus { socket: String, database: String },
     DaemonStopping,
     Spawned(ProcessSummary),
+    ProcessList(Vec<ProcessSummary>),
     NotImplemented { command: String },
 }
 
@@ -52,6 +53,7 @@ pub enum ProcessStatus {
 pub struct ProcessSummary {
     pub id: i64,
     pub status: ProcessStatus,
+    pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub command: Vec<String>,
 }
