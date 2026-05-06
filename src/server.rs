@@ -169,6 +169,7 @@ fn response_for(
         Request::DaemonStop => Response::DaemonStopping,
         Request::Spawn { command } => Response::Spawned(supervisor.spawn(store.clone(), command)?),
         Request::ListProcesses => Response::ProcessList(store.list_processes()?),
+        Request::ShowProcess { id } => Response::ProcessDetails(store.get_process_details(id)?),
         other => Response::NotImplemented {
             command: other.name().to_owned(),
         },
@@ -302,6 +303,36 @@ mod tests {
 
         let status = client.send(Request::DaemonStatus).await?;
         assert!(matches!(status, Response::DaemonStatus { .. }));
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_shows_process_details() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let server_socket = socket.clone();
+        let database = dir.path().join("pz.sqlite");
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        let process =
+            store.insert_process(&["echo".to_owned(), "hello".to_owned()], dir.path(), 111)?;
+        let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client.send(Request::ShowProcess { id: process.id }).await?;
+        let Response::ProcessDetails(details) = response else {
+            bail!("expected process details response");
+        };
+        assert_eq!(details.id, process.id);
+        assert_eq!(details.pid, Some(111));
+        assert_eq!(details.cwd, dir.path().display().to_string());
 
         client.send(Request::DaemonStop).await?;
         server.await??;

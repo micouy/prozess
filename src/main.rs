@@ -73,11 +73,34 @@ fn print_response(response: Result<Response>) -> Result<()> {
             println!("command: {}", process.command.join(" "));
         }
         Response::ProcessList(processes) => print_process_list(&processes),
+        Response::ProcessDetails(process) => print_process_details(&process),
         Response::NotImplemented { command } => println!("{command} is not implemented yet"),
         Response::Error { message } => bail!(message),
     }
 
     Ok(())
+}
+
+fn print_process_details(process: &crate::protocol::ProcessDetails) {
+    let pid = process
+        .pid
+        .map(|pid| pid.to_string())
+        .unwrap_or_else(|| "-".to_owned());
+    let exit = process
+        .exit_code
+        .map(|exit| exit.to_string())
+        .unwrap_or_else(|| "-".to_owned());
+
+    println!("id: {}", process.id);
+    println!("status: {}", process.status);
+    println!("pid: {pid}");
+    println!("exit: {exit}");
+    println!("command: {}", process.command.join(" "));
+    println!("cwd: {}", process.cwd);
+
+    if let Some(error) = &process.error_message {
+        println!("error: {error}");
+    }
 }
 
 fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {

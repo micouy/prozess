@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
-use crate::protocol::{ProcessStatus, ProcessSummary};
+use crate::protocol::{ProcessDetails, ProcessStatus, ProcessSummary};
 
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
@@ -151,6 +151,22 @@ impl Store {
         Ok(processes)
     }
 
+    pub fn get_process_details(&self, id: i64) -> Result<ProcessDetails> {
+        let connection = self.connect()?;
+
+        connection
+            .query_row(
+                "
+                SELECT id, status, pid, exit_code, command, error_message, cwd
+                FROM processes
+                WHERE id = ?1
+                ",
+                [id],
+                process_details_from_row,
+            )
+            .with_context(|| format!("failed to get process {id}"))
+    }
+
     fn connect(&self) -> Result<Connection> {
         Connection::open(&self.database_path)
             .with_context(|| format!("failed to open database {}", self.database_path.display()))
@@ -191,6 +207,26 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
                 Box::new(error),
             )
         })?,
+    })
+}
+
+fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessDetails> {
+    let command: String = row.get(4)?;
+
+    Ok(ProcessDetails {
+        id: row.get(0)?,
+        status: parse_status(row.get::<_, String>(1)?.as_str()),
+        pid: row.get(2)?,
+        exit_code: row.get(3)?,
+        error_message: row.get(5)?,
+        command: serde_json::from_str(&command).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        cwd: row.get(6)?,
     })
 }
 
@@ -335,6 +371,27 @@ mod tests {
         assert_eq!(processes[0].pid, Some(222));
         assert_eq!(processes[0].command, vec!["second"]);
         assert_eq!(processes[1].id, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_process_details_returns_full_metadata() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let command = vec!["echo".to_owned(), "hello".to_owned()];
+        let process = store.insert_process(&command, dir.path(), 1234)?;
+
+        let details = store.get_process_details(process.id)?;
+        assert_eq!(details.id, process.id);
+        assert_eq!(details.status, ProcessStatus::Running);
+        assert_eq!(details.pid, Some(1234));
+        assert_eq!(details.exit_code, None);
+        assert_eq!(details.error_message, None);
+        assert_eq!(details.command, command);
+        assert_eq!(details.cwd, dir.path().display().to_string());
 
         Ok(())
     }
