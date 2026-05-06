@@ -1,6 +1,7 @@
 mod cli;
 mod client;
 mod config;
+mod daemon_state;
 mod protocol;
 mod runtime;
 mod server;

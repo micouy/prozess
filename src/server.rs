@@ -11,6 +11,7 @@ use tokio::{
 };
 
 use crate::client::Client;
+use crate::daemon_state::DaemonState;
 use crate::protocol::{Request, Response};
 use crate::runtime::RuntimePaths;
 use crate::service::Service;
@@ -75,7 +76,12 @@ pub async fn run() -> Result<()> {
 pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> Result<()> {
     prepare_socket(&socket_path).await?;
     let store = Store::open(StoreConfig { database_path })?;
-    let service = Service::new(store, Supervisor::new(), socket_path.display().to_string());
+    let state = DaemonState::default();
+    let service = Service::new(
+        store,
+        Supervisor::new(state),
+        socket_path.display().to_string(),
+    );
 
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind socket at {}", socket_path.display()))?;

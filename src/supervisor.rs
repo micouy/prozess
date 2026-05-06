@@ -4,16 +4,19 @@ use anyhow::{Context, Result, bail};
 use tokio::{io::AsyncReadExt, process::Command};
 
 use crate::{
+    daemon_state::{DaemonState, RuntimeProcess},
     protocol::{OutputStream, ProcessSummary, RunSpec},
     store::Store,
 };
 
-#[derive(Debug, Default, Clone)]
-pub struct Supervisor;
+#[derive(Debug, Clone)]
+pub struct Supervisor {
+    state: DaemonState,
+}
 
 impl Supervisor {
-    pub fn new() -> Self {
-        Self
+    pub fn new(state: DaemonState) -> Self {
+        Self { state }
     }
 
     pub fn spawn(&self, store: Store, spec: RunSpec) -> Result<ProcessSummary> {
@@ -74,6 +77,20 @@ impl Supervisor {
             &env_keys,
         )?;
         let process_id = process.id;
+        let state = self.state.clone();
+
+        tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .insert_process(RuntimeProcess {
+                        id: process_id,
+                        pid,
+                        pgid: pid,
+                    })
+                    .await;
+            }
+        });
 
         if let Some(stdout) = stdout {
             tokio::spawn(capture_output(
@@ -100,6 +117,7 @@ impl Supervisor {
             };
 
             let _ = store.mark_process_finished(process_id, exit_code);
+            state.remove_process(process_id).await;
         });
 
         Ok(process)
