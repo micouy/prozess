@@ -1,10 +1,10 @@
-use std::{env, process::Stdio};
+use std::{collections::BTreeMap, path::PathBuf, process::Stdio};
 
 use anyhow::{Context, Result, bail};
 use tokio::{io::AsyncReadExt, process::Command};
 
 use crate::{
-    protocol::{OutputStream, ProcessSummary},
+    protocol::{OutputStream, ProcessSummary, RunSpec},
     store::Store,
 };
 
@@ -16,33 +16,61 @@ impl Supervisor {
         Self
     }
 
-    pub fn spawn(&self, store: Store, command: Vec<String>) -> Result<ProcessSummary> {
-        let (program, args) = command.split_first().context("missing command to run")?;
+    pub fn spawn(&self, store: Store, spec: RunSpec) -> Result<ProcessSummary> {
+        let (program, args) = spec
+            .command
+            .split_first()
+            .context("missing command to run")?;
         if program.is_empty() {
             bail!("missing command to run");
         }
 
-        let cwd = env::current_dir().context("failed to get current directory")?;
-        let spawn_result = Command::new(program)
+        let cwd = PathBuf::from(&spec.cwd);
+        let env = effective_env(&spec)?;
+        let env_keys = spec
+            .env
+            .iter()
+            .map(|env| env.key.clone())
+            .collect::<Vec<_>>();
+        let mut command = Command::new(program);
+        command
             .args(args)
             .current_dir(&cwd)
+            .env_clear()
+            .envs(env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn();
+            .process_group(0);
+
+        let spawn_result = command.spawn();
         let mut child = match spawn_result {
             Ok(child) => child,
             Err(error) => {
-                let message = format!("failed to spawn {}: {error}", command.join(" "));
-                let _ = store.insert_failed_process(&command, &cwd, &message);
+                let message = format!("failed to spawn {}: {error}", spec.command.join(" "));
+                let _ = store.insert_failed_process(
+                    &spec.command,
+                    &cwd,
+                    &message,
+                    spec.inherit_env,
+                    &spec.env_files,
+                    &env_keys,
+                );
                 bail!(message);
             }
         };
         let pid = child.id().context("spawned process did not expose a pid")?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let process = store.insert_process(&command, &cwd, pid, pid)?;
+        let process = store.insert_process(
+            &spec.command,
+            &cwd,
+            pid,
+            pid,
+            spec.inherit_env,
+            &spec.env_files,
+            &env_keys,
+        )?;
         let process_id = process.id;
 
         if let Some(stdout) = stdout {
@@ -74,6 +102,53 @@ impl Supervisor {
 
         Ok(process)
     }
+}
+
+fn effective_env(spec: &RunSpec) -> Result<BTreeMap<String, String>> {
+    let mut env = if spec.inherit_env {
+        std::env::vars().collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+
+    for env_file in &spec.env_files {
+        for (key, value) in read_env_file(env_file)? {
+            env.insert(key, value);
+        }
+    }
+
+    for env_var in &spec.env {
+        env.insert(env_var.key.clone(), env_var.value.clone());
+    }
+
+    Ok(env)
+}
+
+fn read_env_file(path: &str) -> Result<Vec<(String, String)>> {
+    let contents =
+        std::fs::read_to_string(path).with_context(|| format!("failed to read env file {path}"))?;
+    let mut values = Vec::new();
+
+    for (index, line) in contents.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            bail!(
+                "invalid env file line {} in {path}: expected KEY=VALUE",
+                index + 1
+            );
+        };
+        if key.is_empty() || key.contains('\0') {
+            bail!("invalid env key on line {} in {path}", index + 1);
+        }
+
+        values.push((key.to_owned(), value.to_owned()));
+    }
+
+    Ok(values)
 }
 
 async fn capture_output<R>(store: Store, process_id: i64, stream: OutputStream, mut reader: R)

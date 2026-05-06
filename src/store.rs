@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
-use crate::protocol::{OutputChunk, OutputStream, ProcessDetails, ProcessStatus, ProcessSummary};
+use crate::protocol::{
+    OutputChunk, OutputStream, ProcessDetails, ProcessEnvSummary, ProcessStatus, ProcessSummary,
+};
 
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
@@ -46,18 +48,34 @@ impl Store {
         cwd: &Path,
         pid: u32,
         pgid: u32,
+        inherit_env: bool,
+        env_files: &[String],
+        env_keys: &[String],
     ) -> Result<ProcessSummary> {
         let connection = self.connect()?;
         let command_json = serde_json::to_string(command).context("failed to encode command")?;
+        let env_files_json =
+            serde_json::to_string(env_files).context("failed to encode env files")?;
+        let env_keys_json = serde_json::to_string(env_keys).context("failed to encode env keys")?;
         let cwd = cwd.display().to_string();
 
         connection
             .execute(
                 "
-                INSERT INTO processes (command, cwd, status, pid, pgid, started_at)
-                VALUES (?1, ?2, 'running', ?3, ?4, CURRENT_TIMESTAMP)
+                INSERT INTO processes (
+                    command, cwd, status, pid, pgid, inherit_env, env_files, env_keys, started_at
+                )
+                VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
                 ",
-                params![command_json, cwd, pid, pgid],
+                params![
+                    command_json,
+                    cwd,
+                    pid,
+                    pgid,
+                    inherit_env,
+                    env_files_json,
+                    env_keys_json
+                ],
             )
             .context("failed to insert process")?;
 
@@ -69,6 +87,11 @@ impl Store {
             exit_code: None,
             error_message: None,
             command: command.to_vec(),
+            env: ProcessEnvSummary {
+                inherit_env,
+                env_files: env_files.to_vec(),
+                env_keys: env_keys.to_vec(),
+            },
         })
     }
 
@@ -77,18 +100,26 @@ impl Store {
         command: &[String],
         cwd: &Path,
         error_message: &str,
+        inherit_env: bool,
+        env_files: &[String],
+        env_keys: &[String],
     ) -> Result<ProcessSummary> {
         let connection = self.connect()?;
         let command_json = serde_json::to_string(command).context("failed to encode command")?;
+        let env_files_json =
+            serde_json::to_string(env_files).context("failed to encode env files")?;
+        let env_keys_json = serde_json::to_string(env_keys).context("failed to encode env keys")?;
         let cwd = cwd.display().to_string();
 
         connection
             .execute(
                 "
-                INSERT INTO processes (command, cwd, status, error_message, finished_at)
-                VALUES (?1, ?2, 'failed', ?3, CURRENT_TIMESTAMP)
+                INSERT INTO processes (
+                    command, cwd, status, error_message, inherit_env, env_files, env_keys, finished_at
+                )
+                VALUES (?1, ?2, 'failed', ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP)
                 ",
-                params![command_json, cwd, error_message],
+                params![command_json, cwd, error_message, inherit_env, env_files_json, env_keys_json],
             )
             .context("failed to insert failed process")?;
 
@@ -100,6 +131,11 @@ impl Store {
             exit_code: None,
             error_message: Some(error_message.to_owned()),
             command: command.to_vec(),
+            env: ProcessEnvSummary {
+                inherit_env,
+                env_files: env_files.to_vec(),
+                env_keys: env_keys.to_vec(),
+            },
         })
     }
 
@@ -142,7 +178,7 @@ impl Store {
 
         connection
             .query_row(
-                "SELECT id, status, pid, pgid, exit_code, command, error_message FROM processes WHERE id = ?1",
+                "SELECT id, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys FROM processes WHERE id = ?1",
                 [id],
                 process_summary_from_row,
             )
@@ -154,7 +190,7 @@ impl Store {
         let mut statement = connection
             .prepare(
                 "
-                SELECT id, status, pid, pgid, exit_code, command, error_message
+                SELECT id, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys
                 FROM processes
                 ORDER BY id DESC
                 ",
@@ -176,7 +212,7 @@ impl Store {
         connection
             .query_row(
                 "
-                SELECT id, status, pid, pgid, exit_code, command, error_message, cwd
+                SELECT id, status, pid, pgid, exit_code, command, error_message, cwd, inherit_env, env_files, env_keys
                 FROM processes
                 WHERE id = ?1
                 ",
@@ -325,6 +361,7 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
                 Box::new(error),
             )
         })?,
+        env: env_summary_from_row(row, 7)?,
     })
 }
 
@@ -346,6 +383,33 @@ fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
             )
         })?,
         cwd: row.get(7)?,
+        env: env_summary_from_row(row, 8)?,
+    })
+}
+
+fn env_summary_from_row(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<ProcessEnvSummary> {
+    let env_files: String = row.get(offset + 1)?;
+    let env_keys: String = row.get(offset + 2)?;
+
+    Ok(ProcessEnvSummary {
+        inherit_env: row.get(offset)?,
+        env_files: serde_json::from_str(&env_files).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                offset + 1,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        env_keys: serde_json::from_str(&env_keys).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                offset + 2,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
     })
 }
 
@@ -365,6 +429,9 @@ fn migrate(connection: &Connection) -> Result<()> {
                 pgid INTEGER,
                 exit_code INTEGER,
                 error_message TEXT,
+                inherit_env INTEGER NOT NULL DEFAULT 0,
+                env_files TEXT NOT NULL DEFAULT '[]',
+                env_keys TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 finished_at TEXT
@@ -391,6 +458,33 @@ fn migrate(connection: &Connection) -> Result<()> {
         connection
             .execute("ALTER TABLE processes ADD COLUMN pgid INTEGER", [])
             .context("failed to add process pgid column")?;
+    }
+
+    if !column_exists(connection, "processes", "inherit_env")? {
+        connection
+            .execute(
+                "ALTER TABLE processes ADD COLUMN inherit_env INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .context("failed to add process inherit_env column")?;
+    }
+
+    if !column_exists(connection, "processes", "env_files")? {
+        connection
+            .execute(
+                "ALTER TABLE processes ADD COLUMN env_files TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )
+            .context("failed to add process env_files column")?;
+    }
+
+    if !column_exists(connection, "processes", "env_keys")? {
+        connection
+            .execute(
+                "ALTER TABLE processes ADD COLUMN env_keys TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )
+            .context("failed to add process env_keys column")?;
     }
 
     Ok(())
@@ -441,7 +535,7 @@ mod tests {
         })?;
         let command = vec!["echo".to_owned(), "hello".to_owned()];
 
-        let process = store.insert_process(&command, dir.path(), 1234, 1234)?;
+        let process = store.insert_process(&command, dir.path(), 1234, 1234, false, &[], &[])?;
         assert_eq!(process.id, 1);
         assert_eq!(process.status, ProcessStatus::Running);
         assert_eq!(process.pid, Some(1234));
@@ -449,6 +543,9 @@ mod tests {
         assert_eq!(process.exit_code, None);
         assert_eq!(process.error_message, None);
         assert_eq!(process.command, command);
+        assert!(!process.env.inherit_env);
+        assert!(process.env.env_files.is_empty());
+        assert!(process.env.env_keys.is_empty());
 
         store.mark_process_finished(process.id, Some(0))?;
         let process = store.get_process(process.id)?;
@@ -467,13 +564,23 @@ mod tests {
         })?;
         let command = vec!["/missing".to_owned()];
 
-        let process = store.insert_failed_process(&command, dir.path(), "not found")?;
+        let process = store.insert_failed_process(
+            &command,
+            dir.path(),
+            "not found",
+            true,
+            &["/tmp/test.env".to_owned()],
+            &["SECRET".to_owned()],
+        )?;
         assert_eq!(process.id, 1);
         assert_eq!(process.status, ProcessStatus::Failed);
         assert_eq!(process.pid, None);
         assert_eq!(process.exit_code, None);
         assert_eq!(process.error_message, Some("not found".to_owned()));
         assert_eq!(process.command, command);
+        assert!(process.env.inherit_env);
+        assert_eq!(process.env.env_files, vec!["/tmp/test.env"]);
+        assert_eq!(process.env.env_keys, vec!["SECRET"]);
 
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, ProcessStatus::Failed);
@@ -488,7 +595,15 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: dir.path().join("pz.sqlite"),
         })?;
-        let process = store.insert_process(&["sleep".to_owned()], dir.path(), 1234, 1234)?;
+        let process = store.insert_process(
+            &["sleep".to_owned()],
+            dir.path(),
+            1234,
+            1234,
+            false,
+            &[],
+            &[],
+        )?;
 
         store.mark_process_killed(process.id)?;
         let process = store.get_process(process.id)?;
@@ -504,8 +619,16 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
 
-        store.insert_process(&["first".to_owned()], dir.path(), 111, 111)?;
-        store.insert_process(&["second".to_owned()], dir.path(), 222, 222)?;
+        store.insert_process(&["first".to_owned()], dir.path(), 111, 111, false, &[], &[])?;
+        store.insert_process(
+            &["second".to_owned()],
+            dir.path(),
+            222,
+            222,
+            false,
+            &[],
+            &[],
+        )?;
 
         let processes = store.list_processes()?;
         assert_eq!(processes.len(), 2);
@@ -525,7 +648,15 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
         let command = vec!["echo".to_owned(), "hello".to_owned()];
-        let process = store.insert_process(&command, dir.path(), 1234, 1234)?;
+        let process = store.insert_process(
+            &command,
+            dir.path(),
+            1234,
+            1234,
+            true,
+            &["/tmp/test.env".to_owned()],
+            &["FOO".to_owned()],
+        )?;
 
         let details = store.get_process_details(process.id)?;
         assert_eq!(details.id, process.id);
@@ -536,6 +667,9 @@ mod tests {
         assert_eq!(details.error_message, None);
         assert_eq!(details.command, command);
         assert_eq!(details.cwd, dir.path().display().to_string());
+        assert!(details.env.inherit_env);
+        assert_eq!(details.env.env_files, vec!["/tmp/test.env"]);
+        assert_eq!(details.env.env_keys, vec!["FOO"]);
 
         Ok(())
     }
@@ -546,7 +680,15 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: dir.path().join("pz.sqlite"),
         })?;
-        let process = store.insert_process(&["echo".to_owned()], dir.path(), 1234, 1234)?;
+        let process = store.insert_process(
+            &["echo".to_owned()],
+            dir.path(),
+            1234,
+            1234,
+            false,
+            &[],
+            &[],
+        )?;
 
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"out\n")?;
         store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;

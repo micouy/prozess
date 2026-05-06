@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -48,6 +50,22 @@ pub enum DaemonCommand {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
+    /// Working directory for the process. Defaults to the current directory.
+    #[arg(long)]
+    pub cwd: Option<PathBuf>,
+
+    /// Inherit the CLI environment. By default, processes start with an empty environment.
+    #[arg(long)]
+    pub inherit_env: bool,
+
+    /// Read environment variables from a KEY=VALUE file. Repeatable.
+    #[arg(long = "env-file")]
+    pub env_files: Vec<PathBuf>,
+
+    /// Set an environment variable as KEY=VALUE. Repeatable and takes precedence over env files.
+    #[arg(long = "env")]
+    pub env: Vec<String>,
+
     /// Command and arguments to run. Use `--` before commands with flags.
     #[arg(required = true, trailing_var_arg = true)]
     pub command: Vec<String>,

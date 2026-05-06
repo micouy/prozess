@@ -7,7 +7,7 @@ pub enum Request {
     DaemonStatus,
     DaemonStop,
     Spawn {
-        command: Vec<String>,
+        spec: RunSpec,
     },
     StopProcess {
         id: i64,
@@ -22,6 +22,28 @@ pub enum Request {
         stream: OutputStream,
         after_id: Option<i64>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSpec {
+    pub command: Vec<String>,
+    pub cwd: String,
+    pub inherit_env: bool,
+    pub env_files: Vec<String>,
+    pub env: Vec<EnvVar>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvVar {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessEnvSummary {
+    pub inherit_env: bool,
+    pub env_files: Vec<String>,
+    pub env_keys: Vec<String>,
 }
 
 impl Request {
@@ -96,6 +118,7 @@ pub struct ProcessSummary {
     pub exit_code: Option<i32>,
     pub error_message: Option<String>,
     pub command: Vec<String>,
+    pub env: ProcessEnvSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,4 +131,5 @@ pub struct ProcessDetails {
     pub error_message: Option<String>,
     pub command: Vec<String>,
     pub cwd: String,
+    pub env: ProcessEnvSummary,
 }

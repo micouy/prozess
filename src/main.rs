@@ -6,14 +6,19 @@ mod server;
 mod store;
 mod supervisor;
 
-use std::io::Write;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 
-use crate::cli::{Cli, Command, DaemonCommand, LogStream};
+use crate::cli::{Cli, Command, DaemonCommand, LogStream, RunArgs};
 use crate::client::Client;
-use crate::protocol::{OutputChunk, OutputStream, ProcessStatus, Request, Response, StopSignal};
+use crate::protocol::{
+    EnvVar, OutputChunk, OutputStream, ProcessStatus, Request, Response, RunSpec, StopSignal,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,7 +36,7 @@ async fn main() -> Result<()> {
         Command::Run(args) => print_response(
             Client::new()
                 .send(Request::Spawn {
-                    command: args.command,
+                    spec: run_spec(args)?,
                 })
                 .await,
         ),
@@ -63,6 +68,53 @@ async fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn run_spec(args: RunArgs) -> Result<RunSpec> {
+    let cli_cwd = std::env::current_dir().context("failed to get current directory")?;
+    let cwd = absolute_path(args.cwd.as_deref().unwrap_or(Path::new(".")), &cli_cwd)?;
+    let env_files = args
+        .env_files
+        .iter()
+        .map(|path| absolute_path(path, &cli_cwd).map(|path| path.display().to_string()))
+        .collect::<Result<Vec<_>>>()?;
+    let env = args
+        .env
+        .iter()
+        .map(|value| parse_env_var(value))
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(RunSpec {
+        command: args.command,
+        cwd: cwd.display().to_string(),
+        inherit_env: args.inherit_env,
+        env_files,
+        env,
+    })
+}
+
+fn absolute_path(path: &Path, base: &Path) -> Result<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    };
+
+    Ok(path.components().collect::<PathBuf>())
+}
+
+fn parse_env_var(value: &str) -> Result<EnvVar> {
+    let Some((key, value)) = value.split_once('=') else {
+        bail!("invalid --env value {value:?}: expected KEY=VALUE");
+    };
+    if key.is_empty() || key.contains('\0') {
+        bail!("invalid --env key {key:?}");
+    }
+
+    Ok(EnvVar {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    })
 }
 
 async fn follow_logs(id: i64, stream: OutputStream) -> Result<()> {
@@ -170,6 +222,15 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
     println!("exit: {exit}");
     println!("command: {}", process.command.join(" "));
     println!("cwd: {}", process.cwd);
+    println!("inherit env: {}", process.env.inherit_env);
+
+    if !process.env.env_files.is_empty() {
+        println!("env files: {}", process.env.env_files.join(", "));
+    }
+
+    if !process.env.env_keys.is_empty() {
+        println!("env overrides: {}", process.env.env_keys.join(", "));
+    }
 
     if let Some(error) = &process.error_message {
         println!("error: {error}");

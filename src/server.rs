@@ -167,7 +167,7 @@ fn response_for(
             database: store.database_path().display().to_string(),
         },
         Request::DaemonStop => Response::DaemonStopping,
-        Request::Spawn { command } => Response::Spawned(supervisor.spawn(store.clone(), command)?),
+        Request::Spawn { spec } => Response::Spawned(supervisor.spawn(store.clone(), spec)?),
         Request::StopProcess { id, force } => stop_process(store, id, force)?,
         Request::ListProcesses => Response::ProcessList(store.list_processes()?),
         Request::ShowProcess { id } => Response::ProcessDetails(store.get_process_details(id)?),
@@ -216,6 +216,7 @@ mod tests {
 
     use super::*;
     use crate::client::Client;
+    use crate::protocol::{EnvVar, RunSpec};
 
     #[tokio::test]
     async fn daemon_reports_status_and_stops() -> Result<()> {
@@ -252,8 +253,16 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: database.clone(),
         })?;
-        store.insert_process(&["first".to_owned()], dir.path(), 111, 111)?;
-        store.insert_process(&["second".to_owned()], dir.path(), 222, 222)?;
+        store.insert_process(&["first".to_owned()], dir.path(), 111, 111, false, &[], &[])?;
+        store.insert_process(
+            &["second".to_owned()],
+            dir.path(),
+            222,
+            222,
+            false,
+            &[],
+            &[],
+        )?;
         let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
         let client = Client::for_socket(socket.clone());
 
@@ -287,7 +296,11 @@ mod tests {
         wait_for_socket(&socket).await?;
 
         let command = vec!["/usr/bin/env".to_owned(), "false".to_owned()];
-        let response = client.send(Request::Spawn { command }).await?;
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(command, dir.path()),
+            })
+            .await?;
         let Response::Spawned(process) = response else {
             bail!("expected spawned response");
         };
@@ -316,7 +329,11 @@ mod tests {
         wait_for_socket(&socket).await?;
 
         let command = vec!["/bin/echo".to_owned(), "hello".to_owned()];
-        let response = client.send(Request::Spawn { command }).await?;
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(command, dir.path()),
+            })
+            .await?;
         let Response::Spawned(process) = response else {
             bail!("expected spawned response");
         };
@@ -353,6 +370,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_applies_cwd_and_env_without_storing_values() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let env_file = dir.path().join("test.env");
+        std::fs::write(&env_file, "FOO=file\nSECRET=file-secret\n")?;
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let spec = RunSpec {
+            command: vec!["/usr/bin/env".to_owned()],
+            cwd: dir.path().display().to_string(),
+            inherit_env: false,
+            env_files: vec![env_file.display().to_string()],
+            env: vec![EnvVar {
+                key: "FOO".to_owned(),
+                value: "inline".to_owned(),
+            }],
+        };
+        let response = client.send(Request::Spawn { spec }).await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        wait_for_process_exit(&database, process.id, Some(0)).await?;
+        let output =
+            wait_for_any_output(&database, process.id, crate::protocol::OutputStream::Stdout)
+                .await?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("FOO=inline\n"));
+        assert!(output.contains("SECRET=file-secret\n"));
+
+        let store = Store::open(StoreConfig {
+            database_path: database,
+        })?;
+        let details = store.get_process_details(process.id)?;
+        assert!(!details.env.inherit_env);
+        assert_eq!(details.env.env_files, vec![env_file.display().to_string()]);
+        assert_eq!(details.env.env_keys, vec!["FOO"]);
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn daemon_stops_process_with_sigterm() -> Result<()> {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
@@ -367,7 +436,7 @@ mod tests {
 
         let response = client
             .send(Request::Spawn {
-                command: vec!["/bin/sleep".to_owned(), "30".to_owned()],
+                spec: test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path()),
             })
             .await?;
         let Response::Spawned(process) = response else {
@@ -409,7 +478,10 @@ mod tests {
 
         let response = client
             .send(Request::Spawn {
-                command: vec!["/definitely/not/a/real/pz-test-command".to_owned()],
+                spec: test_run_spec(
+                    vec!["/definitely/not/a/real/pz-test-command".to_owned()],
+                    dir.path(),
+                ),
             })
             .await?;
         assert!(
@@ -447,6 +519,9 @@ mod tests {
             dir.path(),
             111,
             111,
+            false,
+            &[],
+            &[],
         )?;
         let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
         let client = Client::for_socket(socket.clone());
@@ -476,7 +551,8 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: database.clone(),
         })?;
-        let process = store.insert_process(&["echo".to_owned()], dir.path(), 111, 111)?;
+        let process =
+            store.insert_process(&["echo".to_owned()], dir.path(), 111, 111, false, &[], &[])?;
         store.insert_output_chunk(
             process.id,
             crate::protocol::OutputStream::Stdout,
@@ -516,6 +592,16 @@ mod tests {
         }
 
         bail!("daemon socket was not created at {}", socket.display())
+    }
+
+    fn test_run_spec(command: Vec<String>, cwd: &Path) -> RunSpec {
+        RunSpec {
+            command,
+            cwd: cwd.display().to_string(),
+            inherit_env: false,
+            env_files: Vec::new(),
+            env: Vec::new(),
+        }
     }
 
     async fn wait_for_process_exit(
@@ -564,5 +650,30 @@ mod tests {
         }
 
         bail!("process {id} did not produce expected output")
+    }
+
+    async fn wait_for_any_output(
+        database: &Path,
+        id: i64,
+        stream: crate::protocol::OutputStream,
+    ) -> Result<Vec<u8>> {
+        let store = Store::open(StoreConfig {
+            database_path: database.to_path_buf(),
+        })?;
+
+        for _ in 0..100 {
+            let output = store
+                .read_output(id, stream, None)?
+                .into_iter()
+                .flat_map(|chunk| chunk.data)
+                .collect::<Vec<_>>();
+            if !output.is_empty() {
+                return Ok(output);
+            }
+
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        bail!("process {id} did not produce output")
     }
 }
