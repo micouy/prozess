@@ -170,9 +170,7 @@ fn response_for(
         Request::Spawn { command } => Response::Spawned(supervisor.spawn(store.clone(), command)?),
         Request::ListProcesses => Response::ProcessList(store.list_processes()?),
         Request::ShowProcess { id } => Response::ProcessDetails(store.get_process_details(id)?),
-        other => Response::NotImplemented {
-            command: other.name().to_owned(),
-        },
+        Request::ReadLogs { id, stream } => Response::Output(store.read_output(id, stream)?),
     };
 
     Ok(response)
@@ -265,7 +263,56 @@ mod tests {
         assert_eq!(process.id, 1);
         assert_eq!(process.status, crate::protocol::ProcessStatus::Running);
 
-        wait_for_process_exit(&database, process.id).await?;
+        wait_for_process_exit(&database, process.id, Some(1)).await?;
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_spawns_process_and_captures_stdout() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let command = vec!["/bin/echo".to_owned(), "hello".to_owned()];
+        let response = client.send(Request::Spawn { command }).await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        wait_for_process_exit(&database, process.id, Some(0)).await?;
+        wait_for_output(
+            &database,
+            process.id,
+            crate::protocol::OutputStream::Stdout,
+            b"hello\n",
+        )
+        .await?;
+
+        let response = client
+            .send(Request::ReadLogs {
+                id: process.id,
+                stream: crate::protocol::OutputStream::Stdout,
+            })
+            .await?;
+        let Response::Output(chunks) = response else {
+            bail!("expected output response");
+        };
+        let output = chunks
+            .into_iter()
+            .flat_map(|chunk| chunk.data)
+            .collect::<Vec<_>>();
+        assert_eq!(output, b"hello\n");
 
         client.send(Request::DaemonStop).await?;
         server.await??;
@@ -340,6 +387,44 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn daemon_reads_process_logs() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let server_socket = socket.clone();
+        let database = dir.path().join("pz.sqlite");
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        let process = store.insert_process(&["echo".to_owned()], dir.path(), 111)?;
+        store.insert_output_chunk(
+            process.id,
+            crate::protocol::OutputStream::Stdout,
+            b"hello\n",
+        )?;
+        let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::ReadLogs {
+                id: process.id,
+                stream: crate::protocol::OutputStream::Stdout,
+            })
+            .await?;
+        let Response::Output(chunks) = response else {
+            bail!("expected output response");
+        };
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"hello\n");
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
     async fn wait_for_socket(socket: &Path) -> Result<()> {
         for _ in 0..100 {
             if socket.exists() {
@@ -352,7 +437,11 @@ mod tests {
         bail!("daemon socket was not created at {}", socket.display())
     }
 
-    async fn wait_for_process_exit(database: &Path, id: i64) -> Result<()> {
+    async fn wait_for_process_exit(
+        database: &Path,
+        id: i64,
+        expected_exit_code: Option<i32>,
+    ) -> Result<()> {
         let store = Store::open(StoreConfig {
             database_path: database.to_path_buf(),
         })?;
@@ -360,7 +449,7 @@ mod tests {
         for _ in 0..100 {
             let process = store.get_process(id)?;
             if process.status == crate::protocol::ProcessStatus::Exited {
-                assert_eq!(process.exit_code, Some(1));
+                assert_eq!(process.exit_code, expected_exit_code);
                 return Ok(());
             }
 
@@ -368,5 +457,31 @@ mod tests {
         }
 
         bail!("process {id} did not exit")
+    }
+
+    async fn wait_for_output(
+        database: &Path,
+        id: i64,
+        stream: crate::protocol::OutputStream,
+        expected: &[u8],
+    ) -> Result<()> {
+        let store = Store::open(StoreConfig {
+            database_path: database.to_path_buf(),
+        })?;
+
+        for _ in 0..100 {
+            let output = store
+                .read_output(id, stream)?
+                .into_iter()
+                .flat_map(|chunk| chunk.data)
+                .collect::<Vec<_>>();
+            if output == expected {
+                return Ok(());
+            }
+
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        bail!("process {id} did not produce expected output")
     }
 }

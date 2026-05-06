@@ -6,7 +6,9 @@ mod server;
 mod store;
 mod supervisor;
 
-use anyhow::{Result, bail};
+use std::io::Write;
+
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 
 use crate::cli::{Cli, Command, DaemonCommand, LogStream};
@@ -74,8 +76,20 @@ fn print_response(response: Result<Response>) -> Result<()> {
         }
         Response::ProcessList(processes) => print_process_list(&processes),
         Response::ProcessDetails(process) => print_process_details(&process),
-        Response::NotImplemented { command } => println!("{command} is not implemented yet"),
+        Response::Output(chunks) => print_output(&chunks)?,
         Response::Error { message } => bail!(message),
+    }
+
+    Ok(())
+}
+
+fn print_output(chunks: &[crate::protocol::OutputChunk]) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+
+    for chunk in chunks {
+        stdout
+            .write_all(&chunk.data)
+            .context("failed to write output")?;
     }
 
     Ok(())

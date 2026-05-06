@@ -36,9 +36,7 @@ pub enum Response {
     Spawned(ProcessSummary),
     ProcessList(Vec<ProcessSummary>),
     ProcessDetails(ProcessDetails),
-    NotImplemented {
-        command: String,
-    },
+    Output(Vec<OutputChunk>),
     Error {
         message: String,
     },
@@ -49,6 +47,12 @@ pub enum OutputStream {
     All,
     Stdout,
     Stderr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputChunk {
+    pub stream: OutputStream,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

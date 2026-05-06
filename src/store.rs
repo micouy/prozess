@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
-use crate::protocol::{ProcessDetails, ProcessStatus, ProcessSummary};
+use crate::protocol::{OutputChunk, OutputStream, ProcessDetails, ProcessStatus, ProcessSummary};
 
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
@@ -167,6 +167,69 @@ impl Store {
             .with_context(|| format!("failed to get process {id}"))
     }
 
+    pub fn insert_output_chunk(
+        &self,
+        process_id: i64,
+        stream: OutputStream,
+        chunk: &[u8],
+    ) -> Result<()> {
+        let connection = self.connect()?;
+
+        connection
+            .execute(
+                "
+                INSERT INTO process_output (process_id, stream, chunk)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![process_id, stream_name(stream), chunk],
+            )
+            .context("failed to insert output chunk")?;
+
+        Ok(())
+    }
+
+    pub fn read_output(&self, process_id: i64, stream: OutputStream) -> Result<Vec<OutputChunk>> {
+        let connection = self.connect()?;
+        let (sql, stream_filter) = match stream {
+            OutputStream::All => (
+                "
+                SELECT stream, chunk
+                FROM process_output
+                WHERE process_id = ?1
+                ORDER BY id ASC
+                ",
+                None,
+            ),
+            OutputStream::Stdout | OutputStream::Stderr => (
+                "
+                SELECT stream, chunk
+                FROM process_output
+                WHERE process_id = ?1 AND stream = ?2
+                ORDER BY id ASC
+                ",
+                Some(stream_name(stream)),
+            ),
+        };
+        let mut statement = connection
+            .prepare(sql)
+            .context("failed to prepare output query")?;
+
+        let chunks = if let Some(stream_filter) = stream_filter {
+            statement
+                .query_map(params![process_id, stream_filter], output_chunk_from_row)
+                .context("failed to read output")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        } else {
+            statement
+                .query_map([process_id], output_chunk_from_row)
+                .context("failed to read output")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        }
+        .context("failed to decode output")?;
+
+        Ok(chunks)
+    }
+
     fn connect(&self) -> Result<Connection> {
         Connection::open(&self.database_path)
             .with_context(|| format!("failed to open database {}", self.database_path.display()))
@@ -189,6 +252,29 @@ fn parse_status(status: &str) -> ProcessStatus {
         "killed" => ProcessStatus::Killed,
         _ => ProcessStatus::Failed,
     }
+}
+
+fn parse_stream(stream: &str) -> OutputStream {
+    match stream {
+        "stdout" => OutputStream::Stdout,
+        "stderr" => OutputStream::Stderr,
+        _ => OutputStream::All,
+    }
+}
+
+fn stream_name(stream: OutputStream) -> &'static str {
+    match stream {
+        OutputStream::All => "all",
+        OutputStream::Stdout => "stdout",
+        OutputStream::Stderr => "stderr",
+    }
+}
+
+fn output_chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutputChunk> {
+    Ok(OutputChunk {
+        stream: parse_stream(row.get::<_, String>(0)?.as_str()),
+        data: row.get(1)?,
+    })
 }
 
 fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessSummary> {
@@ -392,6 +478,29 @@ mod tests {
         assert_eq!(details.error_message, None);
         assert_eq!(details.command, command);
         assert_eq!(details.cwd, dir.path().display().to_string());
+
+        Ok(())
+    }
+
+    #[test]
+    fn stores_and_filters_output_chunks() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let process = store.insert_process(&["echo".to_owned()], dir.path(), 1234)?;
+
+        store.insert_output_chunk(process.id, OutputStream::Stdout, b"out\n")?;
+        store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;
+
+        let chunks = store.read_output(process.id, OutputStream::All)?;
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].data, b"out\n");
+        assert_eq!(chunks[1].data, b"err\n");
+
+        let chunks = store.read_output(process.id, OutputStream::Stderr)?;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"err\n");
 
         Ok(())
     }
