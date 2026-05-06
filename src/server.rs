@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use tokio::{
@@ -6,12 +10,63 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 
+use crate::client::Client;
 use crate::protocol::{Request, Response};
 use crate::runtime::RuntimePaths;
 use crate::store::{Store, StoreConfig};
 use crate::supervisor::Supervisor;
 
 pub async fn start() -> Result<()> {
+    if let Ok(Response::DaemonStatus {
+        pid,
+        socket,
+        database,
+    }) = Client::new().send(Request::DaemonStatus).await
+    {
+        println!("pz daemon already running");
+        println!("pid: {pid}");
+        println!("socket: {socket}");
+        println!("db: {database}");
+        return Ok(());
+    }
+
+    let paths = RuntimePaths::default();
+    let mut child = std::process::Command::new(std::env::current_exe()?)
+        .args(["daemon", "run"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start pz daemon")?;
+
+    for _ in 0..100 {
+        if let Some(status) = child.try_wait().context("failed to check daemon startup")? {
+            bail!("pz daemon exited during startup with status {status}");
+        }
+
+        if let Ok(Response::DaemonStatus {
+            pid,
+            socket,
+            database,
+        }) = Client::new().send(Request::DaemonStatus).await
+        {
+            println!("pz daemon started");
+            println!("pid: {pid}");
+            println!("socket: {socket}");
+            println!("db: {database}");
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    bail!(
+        "timed out waiting for pz daemon socket at {}",
+        paths.socket.display()
+    )
+}
+
+pub async fn run() -> Result<()> {
     let paths = RuntimePaths::default();
     start_with_paths(paths.socket, paths.database).await
 }
@@ -102,6 +157,7 @@ fn response_for(
 ) -> Result<Response> {
     let response = match request {
         Request::DaemonStatus => Response::DaemonStatus {
+            pid: std::process::id(),
             socket: socket_path.display().to_string(),
             database: store.database_path().display().to_string(),
         },
@@ -140,7 +196,7 @@ mod tests {
 
         let status = client.send(Request::DaemonStatus).await?;
         assert!(
-            matches!(status, Response::DaemonStatus { socket: ref path, database: ref db } if path == &socket.display().to_string() && db == &expected_database)
+            matches!(status, Response::DaemonStatus { socket: ref path, database: ref db, .. } if path == &socket.display().to_string() && db == &expected_database)
         );
 
         let stopping = client.send(Request::DaemonStop).await?;

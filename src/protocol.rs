@@ -27,11 +27,17 @@ impl Request {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
-    DaemonStatus { socket: String, database: String },
+    DaemonStatus {
+        pid: u32,
+        socket: String,
+        database: String,
+    },
     DaemonStopping,
     Spawned(ProcessSummary),
     ProcessList(Vec<ProcessSummary>),
-    NotImplemented { command: String },
+    NotImplemented {
+        command: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

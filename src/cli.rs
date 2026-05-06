@@ -30,8 +30,11 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
-    /// Start the local daemon.
+    /// Start the local daemon in the background.
     Start,
+
+    /// Run the local daemon in the foreground.
+    Run,
 
     /// Check whether the local daemon is running.
     Status,

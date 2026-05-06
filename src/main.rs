@@ -20,6 +20,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Daemon { command } => match command {
             DaemonCommand::Start => server::start().await,
+            DaemonCommand::Run => server::run().await,
             DaemonCommand::Status => {
                 print_response(Client::new().send(Request::DaemonStatus).await)
             }
@@ -55,8 +56,13 @@ async fn main() -> Result<()> {
 
 fn print_response(response: Result<Response>) -> Result<()> {
     match response? {
-        Response::DaemonStatus { socket, database } => {
+        Response::DaemonStatus {
+            pid,
+            socket,
+            database,
+        } => {
             println!("pz daemon running");
+            println!("pid: {pid}");
             println!("socket: {socket}");
             println!("db: {database}");
         }
