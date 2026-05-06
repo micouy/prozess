@@ -29,6 +29,7 @@ impl Supervisor {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .spawn();
         let mut child = match spawn_result {
             Ok(child) => child,
@@ -41,7 +42,7 @@ impl Supervisor {
         let pid = child.id().context("spawned process did not expose a pid")?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let process = store.insert_process(&command, &cwd, pid)?;
+        let process = store.insert_process(&command, &cwd, pid, pid)?;
         let process_id = process.id;
 
         if let Some(stdout) = stdout {

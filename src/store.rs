@@ -45,6 +45,7 @@ impl Store {
         command: &[String],
         cwd: &Path,
         pid: u32,
+        pgid: u32,
     ) -> Result<ProcessSummary> {
         let connection = self.connect()?;
         let command_json = serde_json::to_string(command).context("failed to encode command")?;
@@ -53,10 +54,10 @@ impl Store {
         connection
             .execute(
                 "
-                INSERT INTO processes (command, cwd, status, pid, started_at)
-                VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP)
+                INSERT INTO processes (command, cwd, status, pid, pgid, started_at)
+                VALUES (?1, ?2, 'running', ?3, ?4, CURRENT_TIMESTAMP)
                 ",
-                params![command_json, cwd, pid],
+                params![command_json, cwd, pid, pgid],
             )
             .context("failed to insert process")?;
 
@@ -64,6 +65,7 @@ impl Store {
             id: connection.last_insert_rowid(),
             status: ProcessStatus::Running,
             pid: Some(pid),
+            pgid: Some(pgid),
             exit_code: None,
             error_message: None,
             command: command.to_vec(),
@@ -94,6 +96,7 @@ impl Store {
             id: connection.last_insert_rowid(),
             status: ProcessStatus::Failed,
             pid: None,
+            pgid: None,
             exit_code: None,
             error_message: Some(error_message.to_owned()),
             command: command.to_vec(),
@@ -139,7 +142,7 @@ impl Store {
 
         connection
             .query_row(
-                "SELECT id, status, pid, exit_code, command, error_message FROM processes WHERE id = ?1",
+                "SELECT id, status, pid, pgid, exit_code, command, error_message FROM processes WHERE id = ?1",
                 [id],
                 process_summary_from_row,
             )
@@ -151,7 +154,7 @@ impl Store {
         let mut statement = connection
             .prepare(
                 "
-                SELECT id, status, pid, exit_code, command, error_message
+                SELECT id, status, pid, pgid, exit_code, command, error_message
                 FROM processes
                 ORDER BY id DESC
                 ",
@@ -173,7 +176,7 @@ impl Store {
         connection
             .query_row(
                 "
-                SELECT id, status, pid, exit_code, command, error_message, cwd
+                SELECT id, status, pid, pgid, exit_code, command, error_message, cwd
                 FROM processes
                 WHERE id = ?1
                 ",
@@ -306,17 +309,18 @@ fn output_chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutputChun
 }
 
 fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessSummary> {
-    let command: String = row.get(4)?;
+    let command: String = row.get(5)?;
 
     Ok(ProcessSummary {
         id: row.get(0)?,
         status: parse_status(row.get::<_, String>(1)?.as_str()),
         pid: row.get(2)?,
-        exit_code: row.get(3)?,
-        error_message: row.get(5)?,
+        pgid: row.get(3)?,
+        exit_code: row.get(4)?,
+        error_message: row.get(6)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                4,
+                5,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
@@ -325,22 +329,23 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
 }
 
 fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessDetails> {
-    let command: String = row.get(4)?;
+    let command: String = row.get(5)?;
 
     Ok(ProcessDetails {
         id: row.get(0)?,
         status: parse_status(row.get::<_, String>(1)?.as_str()),
         pid: row.get(2)?,
-        exit_code: row.get(3)?,
-        error_message: row.get(5)?,
+        pgid: row.get(3)?,
+        exit_code: row.get(4)?,
+        error_message: row.get(6)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                4,
+                5,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        cwd: row.get(6)?,
+        cwd: row.get(7)?,
     })
 }
 
@@ -357,6 +362,7 @@ fn migrate(connection: &Connection) -> Result<()> {
                 cwd TEXT NOT NULL,
                 status TEXT NOT NULL,
                 pid INTEGER,
+                pgid INTEGER,
                 exit_code INTEGER,
                 error_message TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -379,6 +385,12 @@ fn migrate(connection: &Connection) -> Result<()> {
         connection
             .execute("ALTER TABLE processes ADD COLUMN error_message TEXT", [])
             .context("failed to add process error_message column")?;
+    }
+
+    if !column_exists(connection, "processes", "pgid")? {
+        connection
+            .execute("ALTER TABLE processes ADD COLUMN pgid INTEGER", [])
+            .context("failed to add process pgid column")?;
     }
 
     Ok(())
@@ -429,10 +441,11 @@ mod tests {
         })?;
         let command = vec!["echo".to_owned(), "hello".to_owned()];
 
-        let process = store.insert_process(&command, dir.path(), 1234)?;
+        let process = store.insert_process(&command, dir.path(), 1234, 1234)?;
         assert_eq!(process.id, 1);
         assert_eq!(process.status, ProcessStatus::Running);
         assert_eq!(process.pid, Some(1234));
+        assert_eq!(process.pgid, Some(1234));
         assert_eq!(process.exit_code, None);
         assert_eq!(process.error_message, None);
         assert_eq!(process.command, command);
@@ -475,7 +488,7 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: dir.path().join("pz.sqlite"),
         })?;
-        let process = store.insert_process(&["sleep".to_owned()], dir.path(), 1234)?;
+        let process = store.insert_process(&["sleep".to_owned()], dir.path(), 1234, 1234)?;
 
         store.mark_process_killed(process.id)?;
         let process = store.get_process(process.id)?;
@@ -491,13 +504,14 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
 
-        store.insert_process(&["first".to_owned()], dir.path(), 111)?;
-        store.insert_process(&["second".to_owned()], dir.path(), 222)?;
+        store.insert_process(&["first".to_owned()], dir.path(), 111, 111)?;
+        store.insert_process(&["second".to_owned()], dir.path(), 222, 222)?;
 
         let processes = store.list_processes()?;
         assert_eq!(processes.len(), 2);
         assert_eq!(processes[0].id, 2);
         assert_eq!(processes[0].pid, Some(222));
+        assert_eq!(processes[0].pgid, Some(222));
         assert_eq!(processes[0].command, vec!["second"]);
         assert_eq!(processes[1].id, 1);
 
@@ -511,12 +525,13 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
         let command = vec!["echo".to_owned(), "hello".to_owned()];
-        let process = store.insert_process(&command, dir.path(), 1234)?;
+        let process = store.insert_process(&command, dir.path(), 1234, 1234)?;
 
         let details = store.get_process_details(process.id)?;
         assert_eq!(details.id, process.id);
         assert_eq!(details.status, ProcessStatus::Running);
         assert_eq!(details.pid, Some(1234));
+        assert_eq!(details.pgid, Some(1234));
         assert_eq!(details.exit_code, None);
         assert_eq!(details.error_message, None);
         assert_eq!(details.command, command);
@@ -531,7 +546,7 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: dir.path().join("pz.sqlite"),
         })?;
-        let process = store.insert_process(&["echo".to_owned()], dir.path(), 1234)?;
+        let process = store.insert_process(&["echo".to_owned()], dir.path(), 1234, 1234)?;
 
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"out\n")?;
         store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;

@@ -158,10 +158,15 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
         .exit_code
         .map(|exit| exit.to_string())
         .unwrap_or_else(|| "-".to_owned());
+    let pgid = process
+        .pgid
+        .map(|pgid| pgid.to_string())
+        .unwrap_or_else(|| "-".to_owned());
 
     println!("id: {}", process.id);
     println!("status: {}", process.status);
     println!("pid: {pid}");
+    println!("pgid: {pgid}");
     println!("exit: {exit}");
     println!("command: {}", process.command.join(" "));
     println!("cwd: {}", process.cwd);

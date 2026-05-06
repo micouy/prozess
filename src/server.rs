@@ -183,15 +183,18 @@ fn response_for(
 
 fn stop_process(store: &Store, id: i64, force: bool) -> Result<Response> {
     let process = store.get_process(id)?;
-    let pid = process.pid.context("process has no pid to stop")?;
+    let pgid = process
+        .pgid
+        .or(process.pid)
+        .context("process has no pid or process group to stop")?;
     let signal = if force {
         nix::sys::signal::Signal::SIGKILL
     } else {
         nix::sys::signal::Signal::SIGTERM
     };
 
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), signal)
-        .with_context(|| format!("failed to send {signal} to pid {pid}"))?;
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(-(pgid as i32)), signal)
+        .with_context(|| format!("failed to send {signal} to process group {pgid}"))?;
     store.mark_process_killed(id)?;
 
     Ok(Response::StoppedProcess {
@@ -249,8 +252,8 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: database.clone(),
         })?;
-        store.insert_process(&["first".to_owned()], dir.path(), 111)?;
-        store.insert_process(&["second".to_owned()], dir.path(), 222)?;
+        store.insert_process(&["first".to_owned()], dir.path(), 111, 111)?;
+        store.insert_process(&["second".to_owned()], dir.path(), 222, 222)?;
         let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
         let client = Client::for_socket(socket.clone());
 
@@ -439,8 +442,12 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: database.clone(),
         })?;
-        let process =
-            store.insert_process(&["echo".to_owned(), "hello".to_owned()], dir.path(), 111)?;
+        let process = store.insert_process(
+            &["echo".to_owned(), "hello".to_owned()],
+            dir.path(),
+            111,
+            111,
+        )?;
         let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
         let client = Client::for_socket(socket.clone());
 
@@ -469,7 +476,7 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: database.clone(),
         })?;
-        let process = store.insert_process(&["echo".to_owned()], dir.path(), 111)?;
+        let process = store.insert_process(&["echo".to_owned()], dir.path(), 111, 111)?;
         store.insert_output_chunk(
             process.id,
             crate::protocol::OutputStream::Stdout,
