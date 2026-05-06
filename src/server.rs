@@ -11,8 +11,9 @@ use tokio::{
 };
 
 use crate::client::Client;
-use crate::protocol::{Request, Response, StopSignal};
+use crate::protocol::{Request, Response};
 use crate::runtime::RuntimePaths;
+use crate::service::Service;
 use crate::store::{Store, StoreConfig};
 use crate::supervisor::Supervisor;
 
@@ -74,7 +75,7 @@ pub async fn run() -> Result<()> {
 pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> Result<()> {
     prepare_socket(&socket_path).await?;
     let store = Store::open(StoreConfig { database_path })?;
-    let supervisor = Supervisor::new();
+    let service = Service::new(store, Supervisor::new(), socket_path.display().to_string());
 
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind socket at {}", socket_path.display()))?;
@@ -84,7 +85,7 @@ pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> R
 
     loop {
         let (stream, _) = listener.accept().await.context("failed to accept client")?;
-        let should_stop = handle_connection(stream, &socket_path, &store, &supervisor).await?;
+        let should_stop = handle_connection(stream, &service).await?;
 
         if should_stop {
             break;
@@ -116,12 +117,7 @@ async fn prepare_socket(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(
-    stream: UnixStream,
-    socket_path: &Path,
-    store: &Store,
-    supervisor: &Supervisor,
-) -> Result<bool> {
+async fn handle_connection(stream: UnixStream, service: &Service) -> Result<bool> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -134,7 +130,7 @@ async fn handle_connection(
     let request: Request =
         serde_json::from_str(&line).context("failed to decode client request")?;
     let should_stop = matches!(request, Request::DaemonStop);
-    let response = match response_for(request, socket_path, store, supervisor) {
+    let response = match service.handle(request) {
         Ok(response) => response,
         Err(error) => Response::Error {
             message: error.to_string(),
@@ -154,70 +150,6 @@ async fn handle_connection(
     Ok(should_stop)
 }
 
-fn response_for(
-    request: Request,
-    socket_path: &Path,
-    store: &Store,
-    supervisor: &Supervisor,
-) -> Result<Response> {
-    let response = match request {
-        Request::DaemonStatus => Response::DaemonStatus {
-            pid: std::process::id(),
-            socket: socket_path.display().to_string(),
-            database: store.database_path().display().to_string(),
-        },
-        Request::DaemonStop => Response::DaemonStopping,
-        Request::Spawn { spec } => Response::Spawned(supervisor.spawn(store.clone(), spec)?),
-        Request::StopProcess { selector, force } => stop_process(store, &selector, force)?,
-        Request::ListProcesses => Response::ProcessList(store.list_processes()?),
-        Request::ShowProcess { selector } => Response::ProcessDetails(
-            store.get_process_details(store.resolve_process_id(&selector)?)?,
-        ),
-        Request::ReadLogs {
-            selector,
-            stream,
-            after_id,
-        } => Response::Output(store.read_output(
-            store.resolve_process_id(&selector)?,
-            stream,
-            after_id,
-        )?),
-    };
-
-    Ok(response)
-}
-
-fn stop_process(
-    store: &Store,
-    selector: &crate::protocol::ProcessSelector,
-    force: bool,
-) -> Result<Response> {
-    let id = store.resolve_process_id(selector)?;
-    let process = store.get_process(id)?;
-    let pgid = process
-        .pgid
-        .or(process.pid)
-        .context("process has no pid or process group to stop")?;
-    let signal = if force {
-        nix::sys::signal::Signal::SIGKILL
-    } else {
-        nix::sys::signal::Signal::SIGTERM
-    };
-
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(-(pgid as i32)), signal)
-        .with_context(|| format!("failed to send {signal} to process group {pgid}"))?;
-    store.mark_process_killed(id)?;
-
-    Ok(Response::StoppedProcess {
-        id,
-        signal: if force {
-            StopSignal::Kill
-        } else {
-            StopSignal::Term
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -227,7 +159,7 @@ mod tests {
 
     use super::*;
     use crate::client::Client;
-    use crate::protocol::{EnvVar, ProcessSelector, RunSpec};
+    use crate::protocol::{EnvVar, ProcessSelector, RunSpec, StopSignal};
 
     #[tokio::test]
     async fn daemon_reports_status_and_stops() -> Result<()> {

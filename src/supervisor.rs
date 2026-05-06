@@ -8,7 +8,7 @@ use crate::{
     store::Store,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Supervisor;
 
 impl Supervisor {

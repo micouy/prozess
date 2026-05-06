@@ -4,6 +4,7 @@ mod config;
 mod protocol;
 mod runtime;
 mod server;
+mod service;
 mod store;
 mod supervisor;
 

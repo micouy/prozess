@@ -1,0 +1,86 @@
+use anyhow::{Context, Result};
+
+use crate::{
+    protocol::{Request, Response, StopSignal},
+    store::Store,
+    supervisor::Supervisor,
+};
+
+#[derive(Debug, Clone)]
+pub struct Service {
+    store: Store,
+    supervisor: Supervisor,
+    socket_path: String,
+}
+
+impl Service {
+    pub fn new(store: Store, supervisor: Supervisor, socket_path: String) -> Self {
+        Self {
+            store,
+            supervisor,
+            socket_path,
+        }
+    }
+
+    pub fn handle(&self, request: Request) -> Result<Response> {
+        let response = match request {
+            Request::DaemonStatus => Response::DaemonStatus {
+                pid: std::process::id(),
+                socket: self.socket_path.clone(),
+                database: self.store.database_path().display().to_string(),
+            },
+            Request::DaemonStop => Response::DaemonStopping,
+            Request::Spawn { spec } => {
+                Response::Spawned(self.supervisor.spawn(self.store.clone(), spec)?)
+            }
+            Request::StopProcess { selector, force } => self.stop_process(&selector, force)?,
+            Request::ListProcesses => Response::ProcessList(self.store.list_processes()?),
+            Request::ShowProcess { selector } => Response::ProcessDetails(
+                self.store
+                    .get_process_details(self.store.resolve_process_id(&selector)?)?,
+            ),
+            Request::ReadLogs {
+                selector,
+                stream,
+                after_id,
+            } => Response::Output(self.store.read_output(
+                self.store.resolve_process_id(&selector)?,
+                stream,
+                after_id,
+            )?),
+        };
+
+        Ok(response)
+    }
+
+    fn stop_process(
+        &self,
+        selector: &crate::protocol::ProcessSelector,
+        force: bool,
+    ) -> Result<Response> {
+        let id = self.store.resolve_process_id(selector)?;
+        let process = self.store.get_process(id)?;
+        let pgid = process
+            .pgid
+            .or(process.pid)
+            .context("process has no pid or process group to stop")?;
+        let signal = if force {
+            nix::sys::signal::Signal::SIGKILL
+        } else {
+            nix::sys::signal::Signal::SIGTERM
+        };
+
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(-(pgid as i32)), signal)
+            .with_context(|| format!("failed to send {signal} to process group {pgid}"))?;
+        self.store.mark_process_killed(id)?;
+
+        Ok(Response::StoppedProcess {
+            id,
+            signal: if force {
+                StopSignal::Kill
+            } else {
+                StopSignal::Term
+            },
+        })
+    }
+}
