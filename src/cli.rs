@@ -27,7 +27,7 @@ pub enum Command {
     Ps,
 
     /// Show details for one process.
-    Show { id: i64 },
+    Show { process: String },
 
     /// Print captured process output.
     Logs(LogsArgs),
@@ -50,6 +50,10 @@ pub enum DaemonCommand {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
+    /// Human-friendly process name for later show/logs/stop commands.
+    #[arg(long)]
+    pub name: Option<String>,
+
     /// Working directory for the process. Defaults to the current directory.
     #[arg(long)]
     pub cwd: Option<PathBuf>,
@@ -73,7 +77,7 @@ pub struct RunArgs {
 
 #[derive(Debug, Args)]
 pub struct StopArgs {
-    pub id: i64,
+    pub process: String,
 
     /// Send SIGKILL instead of SIGTERM.
     #[arg(short, long)]
@@ -82,7 +86,7 @@ pub struct StopArgs {
 
 #[derive(Debug, Args)]
 pub struct LogsArgs {
-    pub id: i64,
+    pub process: String,
 
     /// Output channel to show.
     #[arg(value_enum, default_value_t = LogStream::All)]

@@ -10,22 +10,29 @@ pub enum Request {
         spec: RunSpec,
     },
     StopProcess {
-        id: i64,
+        selector: ProcessSelector,
         force: bool,
     },
     ListProcesses,
     ShowProcess {
-        id: i64,
+        selector: ProcessSelector,
     },
     ReadLogs {
-        id: i64,
+        selector: ProcessSelector,
         stream: OutputStream,
         after_id: Option<i64>,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProcessSelector {
+    Id(i64),
+    Name(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSpec {
+    pub name: Option<String>,
     pub command: Vec<String>,
     pub cwd: String,
     pub inherit_env: bool,
@@ -112,6 +119,7 @@ pub enum ProcessStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessSummary {
     pub id: i64,
+    pub name: Option<String>,
     pub status: ProcessStatus,
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
@@ -124,6 +132,7 @@ pub struct ProcessSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessDetails {
     pub id: i64,
+    pub name: Option<String>,
     pub status: ProcessStatus,
     pub pid: Option<u32>,
     pub pgid: Option<u32>,

@@ -49,6 +49,7 @@ impl Supervisor {
             Err(error) => {
                 let message = format!("failed to spawn {}: {error}", spec.command.join(" "));
                 let _ = store.insert_failed_process(
+                    spec.name.as_deref(),
                     &spec.command,
                     &cwd,
                     &message,
@@ -63,6 +64,7 @@ impl Supervisor {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let process = store.insert_process(
+            spec.name.as_deref(),
             &spec.command,
             &cwd,
             pid,

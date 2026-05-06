@@ -44,6 +44,7 @@ impl Store {
 
     pub fn insert_process(
         &self,
+        name: Option<&str>,
         command: &[String],
         cwd: &Path,
         pid: u32,
@@ -53,6 +54,7 @@ impl Store {
         env_keys: &[String],
     ) -> Result<ProcessSummary> {
         let connection = self.connect()?;
+        ensure_active_name_available(&connection, name)?;
         let command_json = serde_json::to_string(command).context("failed to encode command")?;
         let env_files_json =
             serde_json::to_string(env_files).context("failed to encode env files")?;
@@ -63,11 +65,12 @@ impl Store {
             .execute(
                 "
                 INSERT INTO processes (
-                    command, cwd, status, pid, pgid, inherit_env, env_files, env_keys, started_at
+                    name, command, cwd, status, pid, pgid, inherit_env, env_files, env_keys, started_at
                 )
-                VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
+                VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP)
                 ",
                 params![
+                    name,
                     command_json,
                     cwd,
                     pid,
@@ -81,6 +84,7 @@ impl Store {
 
         Ok(ProcessSummary {
             id: connection.last_insert_rowid(),
+            name: name.map(str::to_owned),
             status: ProcessStatus::Running,
             pid: Some(pid),
             pgid: Some(pgid),
@@ -97,6 +101,7 @@ impl Store {
 
     pub fn insert_failed_process(
         &self,
+        name: Option<&str>,
         command: &[String],
         cwd: &Path,
         error_message: &str,
@@ -125,6 +130,7 @@ impl Store {
 
         Ok(ProcessSummary {
             id: connection.last_insert_rowid(),
+            name: name.map(str::to_owned),
             status: ProcessStatus::Failed,
             pid: None,
             pgid: None,
@@ -178,7 +184,7 @@ impl Store {
 
         connection
             .query_row(
-                "SELECT id, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys FROM processes WHERE id = ?1",
+                "SELECT id, name, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys FROM processes WHERE id = ?1",
                 [id],
                 process_summary_from_row,
             )
@@ -190,7 +196,7 @@ impl Store {
         let mut statement = connection
             .prepare(
                 "
-                SELECT id, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys
+                SELECT id, name, status, pid, pgid, exit_code, command, error_message, inherit_env, env_files, env_keys
                 FROM processes
                 ORDER BY id DESC
                 ",
@@ -212,7 +218,7 @@ impl Store {
         connection
             .query_row(
                 "
-                SELECT id, status, pid, pgid, exit_code, command, error_message, cwd, inherit_env, env_files, env_keys
+                SELECT id, name, status, pid, pgid, exit_code, command, error_message, cwd, inherit_env, env_files, env_keys
                 FROM processes
                 WHERE id = ?1
                 ",
@@ -220,6 +226,28 @@ impl Store {
                 process_details_from_row,
             )
             .with_context(|| format!("failed to get process {id}"))
+    }
+
+    pub fn resolve_process_id(&self, selector: &crate::protocol::ProcessSelector) -> Result<i64> {
+        match selector {
+            crate::protocol::ProcessSelector::Id(id) => Ok(*id),
+            crate::protocol::ProcessSelector::Name(name) => {
+                let connection = self.connect()?;
+                connection
+                    .query_row(
+                        "
+                        SELECT id
+                        FROM processes
+                        WHERE name = ?1
+                        ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, id DESC
+                        LIMIT 1
+                        ",
+                        [name],
+                        |row| row.get(0),
+                    )
+                    .with_context(|| format!("failed to resolve process name {name:?}"))
+            }
+        }
     }
 
     pub fn insert_output_chunk(
@@ -320,6 +348,26 @@ fn parse_status(status: &str) -> ProcessStatus {
     }
 }
 
+fn ensure_active_name_available(connection: &Connection, name: Option<&str>) -> Result<()> {
+    let Some(name) = name else {
+        return Ok(());
+    };
+
+    let existing: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM processes WHERE name = ?1 AND status = 'running'",
+            [name],
+            |row| row.get(0),
+        )
+        .context("failed to check process name")?;
+
+    if existing > 0 {
+        anyhow::bail!("a running process named {name:?} already exists");
+    }
+
+    Ok(())
+}
+
 fn parse_stream(stream: &str) -> OutputStream {
     match stream {
         "stdout" => OutputStream::Stdout,
@@ -345,45 +393,47 @@ fn output_chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutputChun
 }
 
 fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessSummary> {
-    let command: String = row.get(5)?;
+    let command: String = row.get(6)?;
 
     Ok(ProcessSummary {
         id: row.get(0)?,
-        status: parse_status(row.get::<_, String>(1)?.as_str()),
-        pid: row.get(2)?,
-        pgid: row.get(3)?,
-        exit_code: row.get(4)?,
-        error_message: row.get(6)?,
+        name: row.get(1)?,
+        status: parse_status(row.get::<_, String>(2)?.as_str()),
+        pid: row.get(3)?,
+        pgid: row.get(4)?,
+        exit_code: row.get(5)?,
+        error_message: row.get(7)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                5,
+                6,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        env: env_summary_from_row(row, 7)?,
+        env: env_summary_from_row(row, 8)?,
     })
 }
 
 fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessDetails> {
-    let command: String = row.get(5)?;
+    let command: String = row.get(6)?;
 
     Ok(ProcessDetails {
         id: row.get(0)?,
-        status: parse_status(row.get::<_, String>(1)?.as_str()),
-        pid: row.get(2)?,
-        pgid: row.get(3)?,
-        exit_code: row.get(4)?,
-        error_message: row.get(6)?,
+        name: row.get(1)?,
+        status: parse_status(row.get::<_, String>(2)?.as_str()),
+        pid: row.get(3)?,
+        pgid: row.get(4)?,
+        exit_code: row.get(5)?,
+        error_message: row.get(7)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                5,
+                6,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        cwd: row.get(7)?,
-        env: env_summary_from_row(row, 8)?,
+        cwd: row.get(8)?,
+        env: env_summary_from_row(row, 9)?,
     })
 }
 
@@ -422,6 +472,7 @@ fn migrate(connection: &Connection) -> Result<()> {
 
             CREATE TABLE IF NOT EXISTS processes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
                 command TEXT NOT NULL,
                 cwd TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -447,6 +498,12 @@ fn migrate(connection: &Connection) -> Result<()> {
             ",
         )
         .context("failed to initialize database schema")?;
+
+    if !column_exists(connection, "processes", "name")? {
+        connection
+            .execute("ALTER TABLE processes ADD COLUMN name TEXT", [])
+            .context("failed to add process name column")?;
+    }
 
     if !column_exists(connection, "processes", "error_message")? {
         connection
@@ -535,8 +592,18 @@ mod tests {
         })?;
         let command = vec!["echo".to_owned(), "hello".to_owned()];
 
-        let process = store.insert_process(&command, dir.path(), 1234, 1234, false, &[], &[])?;
+        let process = store.insert_process(
+            Some("build"),
+            &command,
+            dir.path(),
+            1234,
+            1234,
+            false,
+            &[],
+            &[],
+        )?;
         assert_eq!(process.id, 1);
+        assert_eq!(process.name, Some("build".to_owned()));
         assert_eq!(process.status, ProcessStatus::Running);
         assert_eq!(process.pid, Some(1234));
         assert_eq!(process.pgid, Some(1234));
@@ -565,6 +632,7 @@ mod tests {
         let command = vec!["/missing".to_owned()];
 
         let process = store.insert_failed_process(
+            Some("missing"),
             &command,
             dir.path(),
             "not found",
@@ -573,6 +641,7 @@ mod tests {
             &["SECRET".to_owned()],
         )?;
         assert_eq!(process.id, 1);
+        assert_eq!(process.name, Some("missing".to_owned()));
         assert_eq!(process.status, ProcessStatus::Failed);
         assert_eq!(process.pid, None);
         assert_eq!(process.exit_code, None);
@@ -596,6 +665,7 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
         let process = store.insert_process(
+            None,
             &["sleep".to_owned()],
             dir.path(),
             1234,
@@ -619,8 +689,18 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
 
-        store.insert_process(&["first".to_owned()], dir.path(), 111, 111, false, &[], &[])?;
         store.insert_process(
+            None,
+            &["first".to_owned()],
+            dir.path(),
+            111,
+            111,
+            false,
+            &[],
+            &[],
+        )?;
+        store.insert_process(
+            Some("second"),
             &["second".to_owned()],
             dir.path(),
             222,
@@ -633,10 +713,64 @@ mod tests {
         let processes = store.list_processes()?;
         assert_eq!(processes.len(), 2);
         assert_eq!(processes[0].id, 2);
+        assert_eq!(processes[0].name, Some("second".to_owned()));
         assert_eq!(processes[0].pid, Some(222));
         assert_eq!(processes[0].pgid, Some(222));
         assert_eq!(processes[0].command, vec!["second"]);
         assert_eq!(processes[1].id, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_named_processes_and_blocks_duplicate_running_names() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+
+        let first = store.insert_process(
+            Some("api"),
+            &["sleep".to_owned()],
+            dir.path(),
+            111,
+            111,
+            false,
+            &[],
+            &[],
+        )?;
+        assert_eq!(
+            store.resolve_process_id(&crate::protocol::ProcessSelector::Name("api".to_owned()))?,
+            first.id
+        );
+
+        let duplicate = store.insert_process(
+            Some("api"),
+            &["sleep".to_owned()],
+            dir.path(),
+            222,
+            222,
+            false,
+            &[],
+            &[],
+        );
+        assert!(duplicate.is_err());
+
+        store.mark_process_finished(first.id, Some(0))?;
+        let second = store.insert_process(
+            Some("api"),
+            &["sleep".to_owned()],
+            dir.path(),
+            333,
+            333,
+            false,
+            &[],
+            &[],
+        )?;
+        assert_eq!(
+            store.resolve_process_id(&crate::protocol::ProcessSelector::Name("api".to_owned()))?,
+            second.id
+        );
 
         Ok(())
     }
@@ -649,6 +783,7 @@ mod tests {
         })?;
         let command = vec!["echo".to_owned(), "hello".to_owned()];
         let process = store.insert_process(
+            Some("details"),
             &command,
             dir.path(),
             1234,
@@ -681,6 +816,7 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
         let process = store.insert_process(
+            None,
             &["echo".to_owned()],
             dir.path(),
             1234,

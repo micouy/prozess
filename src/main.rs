@@ -20,7 +20,8 @@ use crate::cli::{Cli, Command, DaemonCommand, LogStream, RunArgs};
 use crate::client::Client;
 use crate::config::Config;
 use crate::protocol::{
-    EnvVar, OutputChunk, OutputStream, ProcessStatus, Request, Response, RunSpec, StopSignal,
+    EnvVar, OutputChunk, OutputStream, ProcessSelector, ProcessStatus, Request, Response, RunSpec,
+    StopSignal,
 };
 
 #[tokio::main]
@@ -46,23 +47,27 @@ async fn main() -> Result<()> {
         Command::Stop(args) => print_response(
             Client::new()
                 .send(Request::StopProcess {
-                    id: args.id,
+                    selector: process_selector(&args.process),
                     force: args.force,
                 })
                 .await,
         ),
         Command::Ps => print_response(Client::new().send(Request::ListProcesses).await),
-        Command::Show { id } => {
-            print_response(Client::new().send(Request::ShowProcess { id }).await)
-        }
+        Command::Show { process } => print_response(
+            Client::new()
+                .send(Request::ShowProcess {
+                    selector: process_selector(&process),
+                })
+                .await,
+        ),
         Command::Logs(args) => {
             if args.follow {
-                follow_logs(args.id, args.channel.into()).await
+                follow_logs(process_selector(&args.process), args.channel.into()).await
             } else {
                 print_response(
                     Client::new()
                         .send(Request::ReadLogs {
-                            id: args.id,
+                            selector: process_selector(&args.process),
                             stream: args.channel.into(),
                             after_id: None,
                         })
@@ -110,12 +115,20 @@ fn run_spec(args: RunArgs) -> Result<RunSpec> {
         .collect();
 
     Ok(RunSpec {
+        name: args.name,
         command: args.command,
         cwd: cwd.display().to_string(),
         inherit_env: config.run.inherit_env || args.inherit_env,
         env_files,
         env,
     })
+}
+
+fn process_selector(value: &str) -> ProcessSelector {
+    value
+        .parse::<i64>()
+        .map(ProcessSelector::Id)
+        .unwrap_or_else(|_| ProcessSelector::Name(value.to_owned()))
 }
 
 fn absolute_path(path: &Path, base: &Path) -> Result<PathBuf> {
@@ -142,14 +155,14 @@ fn parse_env_var(value: &str) -> Result<EnvVar> {
     })
 }
 
-async fn follow_logs(id: i64, stream: OutputStream) -> Result<()> {
+async fn follow_logs(selector: ProcessSelector, stream: OutputStream) -> Result<()> {
     let client = Client::new();
     let mut after_id = None;
 
     loop {
         let chunks = match client
             .send(Request::ReadLogs {
-                id,
+                selector: selector.clone(),
                 stream,
                 after_id,
             })
@@ -162,7 +175,12 @@ async fn follow_logs(id: i64, stream: OutputStream) -> Result<()> {
         let printed_any = !chunks.is_empty();
         after_id = print_output(&chunks)?.or(after_id);
 
-        let is_running = match client.send(Request::ShowProcess { id }).await? {
+        let is_running = match client
+            .send(Request::ShowProcess {
+                selector: selector.clone(),
+            })
+            .await?
+        {
             Response::ProcessDetails(process) => process.status == ProcessStatus::Running,
             Response::Error { message } => bail!(message),
             _ => bail!("daemon returned an unexpected process response"),
@@ -193,6 +211,9 @@ fn print_response(response: Result<Response>) -> Result<()> {
         Response::DaemonStopping => println!("pz daemon stopped"),
         Response::Spawned(process) => {
             println!("spawned process {}", process.id);
+            if let Some(name) = process.name {
+                println!("name: {name}");
+            }
             println!("status: {}", process.status);
             println!("command: {}", process.command.join(" "));
         }
@@ -241,6 +262,9 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
         .unwrap_or_else(|| "-".to_owned());
 
     println!("id: {}", process.id);
+    if let Some(name) = &process.name {
+        println!("name: {name}");
+    }
     println!("status: {}", process.status);
     println!("pid: {pid}");
     println!("pgid: {pgid}");
@@ -264,8 +288,8 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
 
 fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
     println!(
-        "{:<3} {:<8} {:<6} {:<5} COMMAND / ERROR",
-        "ID", "STATUS", "PID", "EXIT"
+        "{:<3} {:<16} {:<9} {:<6} {:<5} COMMAND / ERROR",
+        "ID", "NAME", "STATUS", "PID", "EXIT"
     );
 
     for process in processes {
@@ -285,8 +309,13 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
         };
 
         println!(
-            "{:<3} {:<8} {:<6} {:<5} {}",
-            process.id, process.status, pid, exit, command
+            "{:<3} {:<16} {:<9} {:<6} {:<5} {}",
+            process.id,
+            process.name.as_deref().unwrap_or("-"),
+            process.status,
+            pid,
+            exit,
+            command
         );
     }
 }

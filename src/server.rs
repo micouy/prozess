@@ -168,20 +168,31 @@ fn response_for(
         },
         Request::DaemonStop => Response::DaemonStopping,
         Request::Spawn { spec } => Response::Spawned(supervisor.spawn(store.clone(), spec)?),
-        Request::StopProcess { id, force } => stop_process(store, id, force)?,
+        Request::StopProcess { selector, force } => stop_process(store, &selector, force)?,
         Request::ListProcesses => Response::ProcessList(store.list_processes()?),
-        Request::ShowProcess { id } => Response::ProcessDetails(store.get_process_details(id)?),
+        Request::ShowProcess { selector } => Response::ProcessDetails(
+            store.get_process_details(store.resolve_process_id(&selector)?)?,
+        ),
         Request::ReadLogs {
-            id,
+            selector,
             stream,
             after_id,
-        } => Response::Output(store.read_output(id, stream, after_id)?),
+        } => Response::Output(store.read_output(
+            store.resolve_process_id(&selector)?,
+            stream,
+            after_id,
+        )?),
     };
 
     Ok(response)
 }
 
-fn stop_process(store: &Store, id: i64, force: bool) -> Result<Response> {
+fn stop_process(
+    store: &Store,
+    selector: &crate::protocol::ProcessSelector,
+    force: bool,
+) -> Result<Response> {
+    let id = store.resolve_process_id(selector)?;
     let process = store.get_process(id)?;
     let pgid = process
         .pgid
@@ -216,7 +227,7 @@ mod tests {
 
     use super::*;
     use crate::client::Client;
-    use crate::protocol::{EnvVar, RunSpec};
+    use crate::protocol::{EnvVar, ProcessSelector, RunSpec};
 
     #[tokio::test]
     async fn daemon_reports_status_and_stops() -> Result<()> {
@@ -253,8 +264,18 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: database.clone(),
         })?;
-        store.insert_process(&["first".to_owned()], dir.path(), 111, 111, false, &[], &[])?;
         store.insert_process(
+            None,
+            &["first".to_owned()],
+            dir.path(),
+            111,
+            111,
+            false,
+            &[],
+            &[],
+        )?;
+        store.insert_process(
+            Some("worker"),
             &["second".to_owned()],
             dir.path(),
             222,
@@ -349,7 +370,7 @@ mod tests {
 
         let response = client
             .send(Request::ReadLogs {
-                id: process.id,
+                selector: ProcessSelector::Id(process.id),
                 stream: crate::protocol::OutputStream::Stdout,
                 after_id: None,
             })
@@ -385,6 +406,7 @@ mod tests {
         wait_for_socket(&socket).await?;
 
         let spec = RunSpec {
+            name: Some("env-test".to_owned()),
             command: vec!["/usr/bin/env".to_owned()],
             cwd: dir.path().display().to_string(),
             inherit_env: false,
@@ -445,7 +467,7 @@ mod tests {
 
         let response = client
             .send(Request::StopProcess {
-                id: process.id,
+                selector: ProcessSelector::Id(process.id),
                 force: false,
             })
             .await?;
@@ -515,6 +537,7 @@ mod tests {
             database_path: database.clone(),
         })?;
         let process = store.insert_process(
+            Some("details"),
             &["echo".to_owned(), "hello".to_owned()],
             dir.path(),
             111,
@@ -528,7 +551,11 @@ mod tests {
 
         wait_for_socket(&socket).await?;
 
-        let response = client.send(Request::ShowProcess { id: process.id }).await?;
+        let response = client
+            .send(Request::ShowProcess {
+                selector: ProcessSelector::Name("details".to_owned()),
+            })
+            .await?;
         let Response::ProcessDetails(details) = response else {
             bail!("expected process details response");
         };
@@ -551,8 +578,16 @@ mod tests {
         let store = Store::open(StoreConfig {
             database_path: database.clone(),
         })?;
-        let process =
-            store.insert_process(&["echo".to_owned()], dir.path(), 111, 111, false, &[], &[])?;
+        let process = store.insert_process(
+            Some("logs"),
+            &["echo".to_owned()],
+            dir.path(),
+            111,
+            111,
+            false,
+            &[],
+            &[],
+        )?;
         store.insert_output_chunk(
             process.id,
             crate::protocol::OutputStream::Stdout,
@@ -565,7 +600,7 @@ mod tests {
 
         let response = client
             .send(Request::ReadLogs {
-                id: process.id,
+                selector: ProcessSelector::Name("logs".to_owned()),
                 stream: crate::protocol::OutputStream::Stdout,
                 after_id: None,
             })
@@ -596,6 +631,7 @@ mod tests {
 
     fn test_run_spec(command: Vec<String>, cwd: &Path) -> RunSpec {
         RunSpec {
+            name: None,
             command,
             cwd: cwd.display().to_string(),
             inherit_env: false,
