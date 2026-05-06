@@ -137,7 +137,7 @@ async fn handle_connection(stream: UnixStream, service: &Service) -> Result<bool
     let request: Request =
         serde_json::from_str(&line).context("failed to decode client request")?;
     let should_stop = matches!(request, Request::DaemonStop);
-    let response = match service.handle(request) {
+    let response = match service.handle(request).await {
         Ok(response) => response,
         Err(error) => Response::Error {
             message: error.to_string(),
@@ -322,6 +322,90 @@ mod tests {
             .flat_map(|chunk| chunk.data)
             .collect::<Vec<_>>();
         assert_eq!(output, b"hello\n");
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_waits_for_running_process_completion() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(
+                    vec!["/usr/bin/env".to_owned(), "false".to_owned()],
+                    dir.path(),
+                ),
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        let response = client
+            .send(Request::WaitProcess {
+                selector: ProcessSelector::Id(process.id),
+            })
+            .await?;
+        let Response::WaitedProcess(process) = response else {
+            bail!("expected waited process response");
+        };
+        assert_eq!(process.status, crate::protocol::ProcessStatus::Exited);
+        assert_eq!(process.exit_code, Some(1));
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_wait_returns_finished_process_immediately() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        let process = store.insert_process(
+            Some("finished"),
+            &["true".to_owned()],
+            dir.path(),
+            111,
+            111,
+            false,
+            &[],
+            &[],
+        )?;
+        store.mark_process_finished(process.id, Some(0))?;
+        let server_socket = socket.clone();
+        let server = tokio::spawn(async move { start_with_paths(server_socket, database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::WaitProcess {
+                selector: ProcessSelector::Name("finished".to_owned()),
+            })
+            .await?;
+        let Response::WaitedProcess(process) = response else {
+            bail!("expected waited process response");
+        };
+        assert_eq!(process.status, crate::protocol::ProcessStatus::Exited);
+        assert_eq!(process.exit_code, Some(0));
 
         client.send(Request::DaemonStop).await?;
         server.await??;

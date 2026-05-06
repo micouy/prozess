@@ -23,6 +23,9 @@ pub enum Command {
     /// Stop a running process.
     Stop(StopArgs),
 
+    /// Wait for a process to finish.
+    Wait { process: String },
+
     /// List tracked processes.
     Ps,
 

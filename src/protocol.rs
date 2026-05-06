@@ -13,6 +13,9 @@ pub enum Request {
         selector: ProcessSelector,
         force: bool,
     },
+    WaitProcess {
+        selector: ProcessSelector,
+    },
     ListProcesses,
     ShowProcess {
         selector: ProcessSelector,
@@ -60,6 +63,7 @@ impl Request {
             Self::DaemonStop => "daemon stop",
             Self::Spawn { .. } => "run",
             Self::StopProcess { .. } => "stop",
+            Self::WaitProcess { .. } => "wait",
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",
@@ -80,6 +84,7 @@ pub enum Response {
         id: i64,
         signal: StopSignal,
     },
+    WaitedProcess(ProcessDetails),
     ProcessList(Vec<ProcessSummary>),
     ProcessDetails(ProcessDetails),
     Output(Vec<OutputChunk>),

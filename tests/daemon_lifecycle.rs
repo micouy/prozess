@@ -81,6 +81,34 @@ fn logs_follow_prints_output_and_exits() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn wait_exits_with_process_status() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "wait-false", "--", "/usr/bin/env", "false"],
+    )?;
+
+    let wait = Command::new(&binary)
+        .args(["wait", "wait-false"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .output()
+        .context("failed to run pz wait")?;
+    assert_eq!(wait.status.code(), Some(1));
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
 fn run_pz(
     binary: &std::path::Path,
     runtime_dir: &tempfile::TempDir,

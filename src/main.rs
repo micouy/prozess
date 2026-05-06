@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
+        Command::Wait { process } => wait_process(process_selector(&process)).await,
         Command::Ps => print_response(Client::new().send(Request::ListProcesses).await),
         Command::Show { process } => print_response(
             Client::new()
@@ -77,6 +78,22 @@ async fn main() -> Result<()> {
                 )
             }
         }
+    }
+}
+
+async fn wait_process(selector: ProcessSelector) -> Result<()> {
+    let response = Client::new()
+        .send(Request::WaitProcess { selector })
+        .await?;
+
+    match response {
+        Response::WaitedProcess(process) => match process.status {
+            ProcessStatus::Exited => std::process::exit(process.exit_code.unwrap_or(1)),
+            ProcessStatus::Killed | ProcessStatus::Failed => std::process::exit(1),
+            ProcessStatus::Running => bail!("process is still running"),
+        },
+        Response::Error { message } => bail!(message),
+        _ => bail!("daemon returned an unexpected wait response"),
     }
 }
 
@@ -223,6 +240,7 @@ fn print_response(response: Result<Response>) -> Result<()> {
             println!("stopped process {id}");
             println!("signal: {signal}");
         }
+        Response::WaitedProcess(process) => print_process_details(&process),
         Response::ProcessList(processes) => print_process_list(&processes),
         Response::ProcessDetails(process) => print_process_details(&process),
         Response::Output(chunks) => {

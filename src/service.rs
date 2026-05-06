@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 
 use crate::{
-    daemon_state::DaemonState,
-    protocol::{Request, Response, StopSignal},
+    daemon_state::{DaemonState, ProcessLifecycle},
+    protocol::{ProcessDetails, ProcessStatus, Request, Response, StopSignal},
     store::Store,
     supervisor::Supervisor,
 };
@@ -30,7 +30,7 @@ impl Service {
         }
     }
 
-    pub fn handle(&self, request: Request) -> Result<Response> {
+    pub async fn handle(&self, request: Request) -> Result<Response> {
         let response = match request {
             Request::DaemonStatus => Response::DaemonStatus {
                 pid: std::process::id(),
@@ -42,6 +42,9 @@ impl Service {
                 Response::Spawned(self.supervisor.spawn(self.store.clone(), spec)?)
             }
             Request::StopProcess { selector, force } => self.stop_process(&selector, force)?,
+            Request::WaitProcess { selector } => {
+                Response::WaitedProcess(self.wait_process(&selector).await?)
+            }
             Request::ListProcesses => Response::ProcessList(self.store.list_processes()?),
             Request::ShowProcess { selector } => Response::ProcessDetails(
                 self.store
@@ -93,5 +96,30 @@ impl Service {
                 StopSignal::Term
             },
         })
+    }
+
+    async fn wait_process(
+        &self,
+        selector: &crate::protocol::ProcessSelector,
+    ) -> Result<ProcessDetails> {
+        let id = self.store.resolve_process_id(selector)?;
+        let details = self.store.get_process_details(id)?;
+        if details.status != ProcessStatus::Running {
+            return Ok(details);
+        }
+
+        if let Some(mut lifecycle) = self.state.subscribe(id) {
+            loop {
+                if matches!(&*lifecycle.borrow(), ProcessLifecycle::Finished { .. }) {
+                    break;
+                }
+
+                if lifecycle.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+
+        self.store.get_process_details(id)
     }
 }
