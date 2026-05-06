@@ -602,6 +602,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_reports_process_group_resources() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path()),
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+        let pid = process.pid.expect("spawned process should have pid");
+
+        let response = client
+            .send(Request::Resources {
+                selector: ProcessSelector::Id(process.id),
+            })
+            .await?;
+        let Response::ResourceSnapshot(resources) = response else {
+            bail!("expected resource snapshot response");
+        };
+        assert_eq!(resources.process_id, process.id);
+        assert_eq!(resources.status, crate::protocol::ProcessStatus::Running);
+        assert!(resources.processes.iter().any(|process| process.pid == pid));
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: true,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn daemon_restarts_process_from_env_files() -> Result<()> {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");

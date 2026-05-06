@@ -32,6 +32,9 @@ pub enum Command {
     /// Restart a process from stored command/cwd/env-file metadata.
     Restart { process: String },
 
+    /// Show current CPU and memory usage for a running process group.
+    Resources { process: String },
+
     /// List tracked processes.
     Ps,
 

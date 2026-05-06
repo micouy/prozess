@@ -70,6 +70,13 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
+        Command::Resources { process } => print_response(
+            Client::new()
+                .send(Request::Resources {
+                    selector: process_selector(&process),
+                })
+                .await,
+        ),
         Command::Ps => print_response(Client::new().send(Request::ListProcesses).await),
         Command::Show { process } => print_response(
             Client::new()
@@ -300,6 +307,7 @@ fn print_response(response: Result<Response>) -> Result<()> {
         Response::WaitedProcess(process) => print_process_details(&process),
         Response::ProcessList(processes) => print_process_list(&processes),
         Response::ProcessDetails(process) => print_process_details(&process),
+        Response::ResourceSnapshot(snapshot) => print_resource_snapshot(&snapshot),
         Response::Output(chunks) => {
             print_output(&chunks)?;
         }
@@ -307,6 +315,73 @@ fn print_response(response: Result<Response>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) {
+    println!("id: {}", snapshot.process_id);
+    if let Some(name) = &snapshot.name {
+        println!("name: {name}");
+    }
+    println!("status: {}", snapshot.status);
+    println!(
+        "pid: {}",
+        snapshot
+            .pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "-".to_owned())
+    );
+    println!(
+        "pgid: {}",
+        snapshot
+            .pgid
+            .map(|pgid| pgid.to_string())
+            .unwrap_or_else(|| "-".to_owned())
+    );
+
+    if snapshot.status != ProcessStatus::Running {
+        println!("resources: unavailable for non-running process");
+        return;
+    }
+
+    println!("processes: {}", snapshot.process_count);
+    println!("memory: {}", format_bytes(snapshot.total_memory_bytes));
+    println!("cpu: {:.1}%", snapshot.total_cpu_percent);
+
+    if snapshot.processes.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("{:<8} {:<8} {:<8} {:<10} NAME", "PID", "PPID", "CPU", "MEM");
+    for process in &snapshot.processes {
+        println!(
+            "{:<8} {:<8} {:<8} {:<10} {}",
+            process.pid,
+            process
+                .parent_pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            format!("{:.1}%", process.cpu_percent),
+            format_bytes(process.memory_bytes),
+            process.name,
+        );
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+
+    if bytes >= GIB {
+        format!("{:.1} GB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 fn print_output(chunks: &[OutputChunk]) -> Result<Option<i64>> {

@@ -1,10 +1,14 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::{
     daemon_state::{DaemonState, ProcessLifecycle},
-    protocol::{ProcessDetails, ProcessStatus, Request, Response, StopSignal},
+    protocol::{
+        ProcessDetails, ProcessStatus, Request, ResourceProcess, ResourceSnapshot, Response,
+        StopSignal,
+    },
     store::{Store, TimeoutSpec},
     supervisor::Supervisor,
 };
@@ -51,6 +55,9 @@ impl Service {
             }
             Request::RestartProcess { selector } => {
                 Response::Spawned(self.restart_process(&selector)?)
+            }
+            Request::Resources { selector } => {
+                Response::ResourceSnapshot(self.resources(&selector)?)
             }
             Request::ListProcesses => Response::ProcessList(self.store.list_processes()?),
             Request::ShowProcess { selector } => Response::ProcessDetails(
@@ -109,6 +116,53 @@ impl Service {
         self.set_timeout_for_id(id, timeout_ms)?;
 
         Ok(Response::TimeoutUpdated { id, timeout_ms })
+    }
+
+    fn resources(&self, selector: &crate::protocol::ProcessSelector) -> Result<ResourceSnapshot> {
+        let id = self.store.resolve_process_id(selector)?;
+        let details = self.store.get_process_details(id)?;
+        let Some(pgid) = details.pgid.or(details.pid) else {
+            return Ok(empty_resource_snapshot(details));
+        };
+
+        if details.status != ProcessStatus::Running {
+            return Ok(empty_resource_snapshot(details));
+        }
+
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        let mut processes = Vec::new();
+
+        for (pid, process) in system.processes() {
+            let pid_u32 = pid.as_u32();
+            if process_group_id(pid_u32) != Some(pgid) {
+                continue;
+            }
+
+            processes.push(ResourceProcess {
+                pid: pid_u32,
+                parent_pid: process.parent().map(Pid::as_u32),
+                name: process.name().to_string_lossy().into_owned(),
+                memory_bytes: process.memory(),
+                cpu_percent: process.cpu_usage(),
+            });
+        }
+
+        processes.sort_by_key(|process| process.pid);
+        let total_memory_bytes = processes.iter().map(|process| process.memory_bytes).sum();
+        let total_cpu_percent = processes.iter().map(|process| process.cpu_percent).sum();
+
+        Ok(ResourceSnapshot {
+            process_id: details.id,
+            name: details.name,
+            status: details.status,
+            pid: details.pid,
+            pgid: details.pgid,
+            process_count: processes.len(),
+            total_memory_bytes,
+            total_cpu_percent,
+            processes,
+        })
     }
 
     fn set_timeout_for_id(&self, id: i64, timeout_ms: Option<u64>) -> Result<()> {
@@ -206,6 +260,26 @@ impl Service {
 
         self.store.get_process_details(id)
     }
+}
+
+fn empty_resource_snapshot(details: ProcessDetails) -> ResourceSnapshot {
+    ResourceSnapshot {
+        process_id: details.id,
+        name: details.name,
+        status: details.status,
+        pid: details.pid,
+        pgid: details.pgid,
+        process_count: 0,
+        total_memory_bytes: 0,
+        total_cpu_percent: 0.0,
+        processes: Vec::new(),
+    }
+}
+
+fn process_group_id(pid: u32) -> Option<u32> {
+    nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(pid as i32)))
+        .ok()
+        .and_then(|pgid| u32::try_from(pgid.as_raw()).ok())
 }
 
 fn now_ms() -> Result<i64> {

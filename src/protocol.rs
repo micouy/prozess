@@ -23,6 +23,9 @@ pub enum Request {
     RestartProcess {
         selector: ProcessSelector,
     },
+    Resources {
+        selector: ProcessSelector,
+    },
     ListProcesses,
     ShowProcess {
         selector: ProcessSelector,
@@ -74,6 +77,7 @@ impl Request {
             Self::SetTimeout { .. } => "timeout",
             Self::WaitProcess { .. } => "wait",
             Self::RestartProcess { .. } => "restart",
+            Self::Resources { .. } => "resources",
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",
@@ -101,6 +105,7 @@ pub enum Response {
     WaitedProcess(ProcessDetails),
     ProcessList(Vec<ProcessSummary>),
     ProcessDetails(ProcessDetails),
+    ResourceSnapshot(ResourceSnapshot),
     Output(Vec<OutputChunk>),
     Error {
         message: String,
@@ -165,4 +170,26 @@ pub struct ProcessDetails {
     pub command: Vec<String>,
     pub cwd: String,
     pub env: ProcessEnvSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceSnapshot {
+    pub process_id: i64,
+    pub name: Option<String>,
+    pub status: ProcessStatus,
+    pub pid: Option<u32>,
+    pub pgid: Option<u32>,
+    pub process_count: usize,
+    pub total_memory_bytes: u64,
+    pub total_cpu_percent: f32,
+    pub processes: Vec<ResourceProcess>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceProcess {
+    pub pid: u32,
+    pub parent_pid: Option<u32>,
+    pub name: String,
+    pub memory_bytes: u64,
+    pub cpu_percent: f32,
 }
