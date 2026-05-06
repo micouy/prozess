@@ -54,9 +54,9 @@ pub struct RunArgs {
 pub struct LogsArgs {
     pub id: i64,
 
-    /// Stream to show.
-    #[arg(long, value_enum, default_value_t = LogStream::All)]
-    pub stream: LogStream,
+    /// Output channel to show.
+    #[arg(value_enum, default_value_t = LogStream::All)]
+    pub channel: LogStream,
 
     /// Continue printing new output as it arrives.
     #[arg(short, long)]

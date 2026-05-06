@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
                 Client::new()
                     .send(Request::ReadLogs {
                         id: args.id,
-                        stream: args.stream.into(),
+                        stream: args.channel.into(),
                     })
                     .await,
             )
