@@ -1,5 +1,6 @@
 mod cli;
 mod client;
+mod config;
 mod protocol;
 mod runtime;
 mod server;
@@ -7,6 +8,7 @@ mod store;
 mod supervisor;
 
 use std::{
+    collections::BTreeMap,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -16,6 +18,7 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command, DaemonCommand, LogStream, RunArgs};
 use crate::client::Client;
+use crate::config::Config;
 use crate::protocol::{
     EnvVar, OutputChunk, OutputStream, ProcessStatus, Request, Response, RunSpec, StopSignal,
 };
@@ -71,23 +74,45 @@ async fn main() -> Result<()> {
 }
 
 fn run_spec(args: RunArgs) -> Result<RunSpec> {
+    let config = Config::load()?;
     let cli_cwd = std::env::current_dir().context("failed to get current directory")?;
     let cwd = absolute_path(args.cwd.as_deref().unwrap_or(Path::new(".")), &cli_cwd)?;
-    let env_files = args
+    let mut env_files = config
+        .run
         .env_files
         .iter()
-        .map(|path| absolute_path(path, &cli_cwd).map(|path| path.display().to_string()))
-        .collect::<Result<Vec<_>>>()?;
-    let env = args
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    env_files.extend(
+        args.env_files
+            .iter()
+            .map(|path| absolute_path(path, &cli_cwd).map(|path| path.display().to_string()))
+            .collect::<Result<Vec<_>>>()?,
+    );
+    let mut env = config
+        .env
+        .into_iter()
+        .map(|env| (env.key, env.value))
+        .collect::<BTreeMap<_, _>>();
+
+    for env_var in args
         .env
         .iter()
         .map(|value| parse_env_var(value))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?
+    {
+        env.insert(env_var.key, env_var.value);
+    }
+
+    let env = env
+        .into_iter()
+        .map(|(key, value)| EnvVar { key, value })
+        .collect();
 
     Ok(RunSpec {
         command: args.command,
         cwd: cwd.display().to_string(),
-        inherit_env: args.inherit_env,
+        inherit_env: config.run.inherit_env || args.inherit_env,
         env_files,
         env,
     })
