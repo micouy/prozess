@@ -5,6 +5,7 @@ use rusqlite::{Connection, params};
 
 use crate::protocol::{
     OutputChunk, OutputStream, ProcessDetails, ProcessEnvSummary, ProcessStatus, ProcessSummary,
+    RunSpec,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +303,25 @@ impl Store {
                 process_details_from_row,
             )
             .with_context(|| format!("failed to get process {id}"))
+    }
+
+    pub fn restart_spec(&self, id: i64) -> Result<RunSpec> {
+        let details = self.get_process_details(id)?;
+        if !details.env.env_keys.is_empty() {
+            anyhow::bail!(
+                "cannot restart process {id}: inline env values were not stored; use env files or config for restartable processes"
+            );
+        }
+
+        Ok(RunSpec {
+            name: details.name,
+            timeout_ms: details.timeout_ms,
+            command: details.command,
+            cwd: details.cwd,
+            inherit_env: details.env.inherit_env,
+            env_files: details.env.env_files,
+            env: Vec::new(),
+        })
     }
 
     pub fn resolve_process_id(&self, selector: &crate::protocol::ProcessSelector) -> Result<i64> {

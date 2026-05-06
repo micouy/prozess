@@ -29,6 +29,9 @@ pub enum Command {
     /// Wait for a process to finish.
     Wait { process: String },
 
+    /// Restart a process from stored command/cwd/env-file metadata.
+    Restart { process: String },
+
     /// List tracked processes.
     Ps,
 

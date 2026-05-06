@@ -20,6 +20,9 @@ pub enum Request {
     WaitProcess {
         selector: ProcessSelector,
     },
+    RestartProcess {
+        selector: ProcessSelector,
+    },
     ListProcesses,
     ShowProcess {
         selector: ProcessSelector,
@@ -70,6 +73,7 @@ impl Request {
             Self::StopProcess { .. } => "stop",
             Self::SetTimeout { .. } => "timeout",
             Self::WaitProcess { .. } => "wait",
+            Self::RestartProcess { .. } => "restart",
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",

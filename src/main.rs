@@ -63,6 +63,13 @@ async fn main() -> Result<()> {
                 .await,
         ),
         Command::Wait { process } => wait_process(process_selector(&process)).await,
+        Command::Restart { process } => print_response(
+            Client::new()
+                .send(Request::RestartProcess {
+                    selector: process_selector(&process),
+                })
+                .await,
+        ),
         Command::Ps => print_response(Client::new().send(Request::ListProcesses).await),
         Command::Show { process } => print_response(
             Client::new()
@@ -361,7 +368,7 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
 
 fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
     println!(
-        "{:<3} {:<16} {:<9} {:<6} {:<5} COMMAND / ERROR",
+        "{:<3} {:<16} {:<10} {:<6} {:<5} COMMAND / ERROR",
         "ID", "NAME", "STATUS", "PID", "EXIT"
     );
 
@@ -382,7 +389,7 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
         };
 
         println!(
-            "{:<3} {:<16} {:<9} {:<6} {:<5} {}",
+            "{:<3} {:<16} {:<10} {:<6} {:<5} {}",
             process.id,
             process.name.as_deref().unwrap_or("-"),
             process.status,

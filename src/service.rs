@@ -49,6 +49,9 @@ impl Service {
             Request::WaitProcess { selector } => {
                 Response::WaitedProcess(self.wait_process(&selector).await?)
             }
+            Request::RestartProcess { selector } => {
+                Response::Spawned(self.restart_process(&selector)?)
+            }
             Request::ListProcesses => Response::ProcessList(self.store.list_processes()?),
             Request::ShowProcess { selector } => Response::ProcessDetails(
                 self.store
@@ -80,6 +83,21 @@ impl Service {
         }
 
         Ok(process)
+    }
+
+    fn restart_process(
+        &self,
+        selector: &crate::protocol::ProcessSelector,
+    ) -> Result<crate::protocol::ProcessSummary> {
+        let id = self.store.resolve_process_id(selector)?;
+        let spec = self.store.restart_spec(id)?;
+        let details = self.store.get_process_details(id)?;
+
+        if details.status == ProcessStatus::Running {
+            self.stop_process(selector, false)?;
+        }
+
+        self.spawn_process(spec)
     }
 
     fn set_timeout(

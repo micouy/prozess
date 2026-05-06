@@ -602,6 +602,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_restarts_process_from_env_files() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let env_file = dir.path().join("restart.env");
+        std::fs::write(&env_file, "RESTART_VALUE=from-file\n")?;
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/usr/bin/env".to_owned()], dir.path());
+        spec.name = Some("restartable".to_owned());
+        spec.env_files = vec![env_file.display().to_string()];
+        let response = client.send(Request::Spawn { spec }).await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+        wait_for_process_exit(&database, process.id, Some(0)).await?;
+
+        let response = client
+            .send(Request::RestartProcess {
+                selector: ProcessSelector::Name("restartable".to_owned()),
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+        assert_eq!(process.name, Some("restartable".to_owned()));
+        wait_for_process_exit(&database, process.id, Some(0)).await?;
+        let output =
+            wait_for_any_output(&database, process.id, crate::protocol::OutputStream::Stdout)
+                .await?;
+        assert!(String::from_utf8(output)?.contains("RESTART_VALUE=from-file\n"));
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_refuses_restart_with_inline_env_keys() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/usr/bin/env".to_owned()], dir.path());
+        spec.name = Some("not-restartable".to_owned());
+        spec.env = vec![EnvVar {
+            key: "SECRET".to_owned(),
+            value: "hidden".to_owned(),
+        }];
+        let response = client.send(Request::Spawn { spec }).await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+        wait_for_process_exit(&database, process.id, Some(0)).await?;
+
+        let response = client
+            .send(Request::RestartProcess {
+                selector: ProcessSelector::Name("not-restartable".to_owned()),
+            })
+            .await?;
+        assert!(
+            matches!(response, Response::Error { message } if message.contains("inline env values were not stored"))
+        );
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn daemon_survives_failed_spawn() -> Result<()> {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
