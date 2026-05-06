@@ -142,6 +142,7 @@ fn print_output(chunks: &[OutputChunk]) -> Result<Option<i64>> {
         stdout
             .write_all(&chunk.data)
             .context("failed to write output")?;
+        stdout.flush().context("failed to flush output")?;
         last_id = Some(chunk.id);
     }
 
