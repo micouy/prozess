@@ -18,6 +18,9 @@ pub enum Command {
     /// Spawn a process through the daemon.
     Run(RunArgs),
 
+    /// Stop a running process.
+    Stop(StopArgs),
+
     /// List tracked processes.
     Ps,
 
@@ -48,6 +51,15 @@ pub struct RunArgs {
     /// Command and arguments to run. Use `--` before commands with flags.
     #[arg(required = true, trailing_var_arg = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct StopArgs {
+    pub id: i64,
+
+    /// Send SIGKILL instead of SIGTERM.
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]

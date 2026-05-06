@@ -11,7 +11,7 @@ use tokio::{
 };
 
 use crate::client::Client;
-use crate::protocol::{Request, Response};
+use crate::protocol::{Request, Response, StopSignal};
 use crate::runtime::RuntimePaths;
 use crate::store::{Store, StoreConfig};
 use crate::supervisor::Supervisor;
@@ -168,6 +168,7 @@ fn response_for(
         },
         Request::DaemonStop => Response::DaemonStopping,
         Request::Spawn { command } => Response::Spawned(supervisor.spawn(store.clone(), command)?),
+        Request::StopProcess { id, force } => stop_process(store, id, force)?,
         Request::ListProcesses => Response::ProcessList(store.list_processes()?),
         Request::ShowProcess { id } => Response::ProcessDetails(store.get_process_details(id)?),
         Request::ReadLogs {
@@ -178,6 +179,29 @@ fn response_for(
     };
 
     Ok(response)
+}
+
+fn stop_process(store: &Store, id: i64, force: bool) -> Result<Response> {
+    let process = store.get_process(id)?;
+    let pid = process.pid.context("process has no pid to stop")?;
+    let signal = if force {
+        nix::sys::signal::Signal::SIGKILL
+    } else {
+        nix::sys::signal::Signal::SIGTERM
+    };
+
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), signal)
+        .with_context(|| format!("failed to send {signal} to pid {pid}"))?;
+    store.mark_process_killed(id)?;
+
+    Ok(Response::StoppedProcess {
+        id,
+        signal: if force {
+            StopSignal::Kill
+        } else {
+            StopSignal::Term
+        },
+    })
 }
 
 #[cfg(test)]
@@ -318,6 +342,50 @@ mod tests {
             .flat_map(|chunk| chunk.data)
             .collect::<Vec<_>>();
         assert_eq!(output, b"hello\n");
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_stops_process_with_sigterm() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::Spawn {
+                command: vec!["/bin/sleep".to_owned(), "30".to_owned()],
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        let response = client
+            .send(Request::StopProcess {
+                id: process.id,
+                force: false,
+            })
+            .await?;
+        assert!(
+            matches!(response, Response::StoppedProcess { id, signal: StopSignal::Term } if id == process.id)
+        );
+
+        let store = Store::open(StoreConfig {
+            database_path: database,
+        })?;
+        let process = store.get_process(process.id)?;
+        assert_eq!(process.status, crate::protocol::ProcessStatus::Killed);
 
         client.send(Request::DaemonStop).await?;
         server.await??;

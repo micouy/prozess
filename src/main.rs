@@ -13,7 +13,7 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command, DaemonCommand, LogStream};
 use crate::client::Client;
-use crate::protocol::{OutputChunk, OutputStream, ProcessStatus, Request, Response};
+use crate::protocol::{OutputChunk, OutputStream, ProcessStatus, Request, Response, StopSignal};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,6 +32,14 @@ async fn main() -> Result<()> {
             Client::new()
                 .send(Request::Spawn {
                     command: args.command,
+                })
+                .await,
+        ),
+        Command::Stop(args) => print_response(
+            Client::new()
+                .send(Request::StopProcess {
+                    id: args.id,
+                    force: args.force,
                 })
                 .await,
         ),
@@ -110,6 +118,10 @@ fn print_response(response: Result<Response>) -> Result<()> {
             println!("spawned process {}", process.id);
             println!("status: {}", process.status);
             println!("command: {}", process.command.join(" "));
+        }
+        Response::StoppedProcess { id, signal } => {
+            println!("stopped process {id}");
+            println!("signal: {signal}");
         }
         Response::ProcessList(processes) => print_process_list(&processes),
         Response::ProcessDetails(process) => print_process_details(&process),
@@ -207,5 +219,16 @@ impl std::fmt::Display for crate::protocol::ProcessStatus {
         };
 
         formatter.write_str(status)
+    }
+}
+
+impl std::fmt::Display for StopSignal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let signal = match self {
+            Self::Term => "TERM",
+            Self::Kill => "KILL",
+        };
+
+        formatter.write_str(signal)
     }
 }

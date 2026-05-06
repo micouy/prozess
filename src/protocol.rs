@@ -9,6 +9,10 @@ pub enum Request {
     Spawn {
         command: Vec<String>,
     },
+    StopProcess {
+        id: i64,
+        force: bool,
+    },
     ListProcesses,
     ShowProcess {
         id: i64,
@@ -26,6 +30,7 @@ impl Request {
             Self::DaemonStatus => "daemon status",
             Self::DaemonStop => "daemon stop",
             Self::Spawn { .. } => "run",
+            Self::StopProcess { .. } => "stop",
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",
@@ -42,12 +47,22 @@ pub enum Response {
     },
     DaemonStopping,
     Spawned(ProcessSummary),
+    StoppedProcess {
+        id: i64,
+        signal: StopSignal,
+    },
     ProcessList(Vec<ProcessSummary>),
     ProcessDetails(ProcessDetails),
     Output(Vec<OutputChunk>),
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum StopSignal {
+    Term,
+    Kill,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

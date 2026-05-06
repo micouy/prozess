@@ -108,7 +108,7 @@ impl Store {
                 "
                 UPDATE processes
                 SET status = 'exited', exit_code = ?1, finished_at = CURRENT_TIMESTAMP
-                WHERE id = ?2
+                WHERE id = ?2 AND status = 'running'
                 ",
                 params![exit_code, id],
             )
@@ -117,7 +117,23 @@ impl Store {
         Ok(())
     }
 
-    #[cfg(test)]
+    pub fn mark_process_killed(&self, id: i64) -> Result<()> {
+        let connection = self.connect()?;
+
+        connection
+            .execute(
+                "
+                UPDATE processes
+                SET status = 'killed', finished_at = CURRENT_TIMESTAMP
+                WHERE id = ?1
+                ",
+                [id],
+            )
+            .context("failed to mark process killed")?;
+
+        Ok(())
+    }
+
     pub fn get_process(&self, id: i64) -> Result<ProcessSummary> {
         let connection = self.connect()?;
 
@@ -449,6 +465,21 @@ mod tests {
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, ProcessStatus::Failed);
         assert_eq!(process.error_message, Some("not found".to_owned()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn mark_process_killed_sets_status() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let process = store.insert_process(&["sleep".to_owned()], dir.path(), 1234)?;
+
+        store.mark_process_killed(process.id)?;
+        let process = store.get_process(process.id)?;
+        assert_eq!(process.status, ProcessStatus::Killed);
 
         Ok(())
     }
