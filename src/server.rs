@@ -9,6 +9,7 @@ use tokio::{
 use crate::protocol::{Request, Response};
 use crate::runtime::RuntimePaths;
 use crate::store::{Store, StoreConfig};
+use crate::supervisor::Supervisor;
 
 pub async fn start() -> Result<()> {
     let paths = RuntimePaths::default();
@@ -18,6 +19,7 @@ pub async fn start() -> Result<()> {
 pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> Result<()> {
     prepare_socket(&socket_path).await?;
     let store = Store::open(StoreConfig { database_path })?;
+    let supervisor = Supervisor::new();
 
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind socket at {}", socket_path.display()))?;
@@ -27,7 +29,7 @@ pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> R
 
     loop {
         let (stream, _) = listener.accept().await.context("failed to accept client")?;
-        let should_stop = handle_connection(stream, &socket_path, &store).await?;
+        let should_stop = handle_connection(stream, &socket_path, &store, &supervisor).await?;
 
         if should_stop {
             break;
@@ -59,7 +61,12 @@ async fn prepare_socket(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(stream: UnixStream, socket_path: &Path, store: &Store) -> Result<bool> {
+async fn handle_connection(
+    stream: UnixStream,
+    socket_path: &Path,
+    store: &Store,
+    supervisor: &Supervisor,
+) -> Result<bool> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -72,7 +79,7 @@ async fn handle_connection(stream: UnixStream, socket_path: &Path, store: &Store
     let request: Request =
         serde_json::from_str(&line).context("failed to decode client request")?;
     let should_stop = matches!(request, Request::DaemonStop);
-    let response = response_for(request, socket_path, store.database_path());
+    let response = response_for(request, socket_path, store, supervisor)?;
     let response = serde_json::to_vec(&response).context("failed to encode response")?;
 
     writer
@@ -87,17 +94,25 @@ async fn handle_connection(stream: UnixStream, socket_path: &Path, store: &Store
     Ok(should_stop)
 }
 
-fn response_for(request: Request, socket_path: &Path, database_path: &Path) -> Response {
-    match request {
+fn response_for(
+    request: Request,
+    socket_path: &Path,
+    store: &Store,
+    supervisor: &Supervisor,
+) -> Result<Response> {
+    let response = match request {
         Request::DaemonStatus => Response::DaemonStatus {
             socket: socket_path.display().to_string(),
-            database: database_path.display().to_string(),
+            database: store.database_path().display().to_string(),
         },
         Request::DaemonStop => Response::DaemonStopping,
+        Request::Spawn { command } => Response::Spawned(supervisor.spawn(store.clone(), command)?),
         other => Response::NotImplemented {
             command: other.name().to_owned(),
         },
-    }
+    };
+
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -156,6 +171,35 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn daemon_spawns_process_and_records_exit() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let command = vec!["/usr/bin/env".to_owned(), "false".to_owned()];
+        let response = client.send(Request::Spawn { command }).await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+        assert_eq!(process.id, 1);
+        assert_eq!(process.status, crate::protocol::ProcessStatus::Running);
+
+        wait_for_process_exit(&database, process.id).await?;
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
     async fn wait_for_socket(socket: &Path) -> Result<()> {
         for _ in 0..100 {
             if socket.exists() {
@@ -166,5 +210,23 @@ mod tests {
         }
 
         bail!("daemon socket was not created at {}", socket.display())
+    }
+
+    async fn wait_for_process_exit(database: &Path, id: i64) -> Result<()> {
+        let store = Store::open(StoreConfig {
+            database_path: database.to_path_buf(),
+        })?;
+
+        for _ in 0..100 {
+            let process = store.get_process(id)?;
+            if process.status == crate::protocol::ProcessStatus::Exited {
+                assert_eq!(process.exit_code, Some(1));
+                return Ok(());
+            }
+
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        bail!("process {id} did not exit")
     }
 }

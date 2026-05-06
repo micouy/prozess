@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
+
+use crate::protocol::{ProcessStatus, ProcessSummary};
 
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
@@ -36,6 +38,102 @@ impl Store {
 
     pub fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    pub fn insert_process(
+        &self,
+        command: &[String],
+        cwd: &Path,
+        pid: u32,
+    ) -> Result<ProcessSummary> {
+        let connection = self.connect()?;
+        let command_json = serde_json::to_string(command).context("failed to encode command")?;
+        let cwd = cwd.display().to_string();
+
+        connection
+            .execute(
+                "
+                INSERT INTO processes (command, cwd, status, pid, started_at)
+                VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP)
+                ",
+                params![command_json, cwd, pid],
+            )
+            .context("failed to insert process")?;
+
+        Ok(ProcessSummary {
+            id: connection.last_insert_rowid(),
+            status: ProcessStatus::Running,
+            exit_code: None,
+            command: command.to_vec(),
+        })
+    }
+
+    pub fn mark_process_finished(&self, id: i64, exit_code: Option<i32>) -> Result<()> {
+        let connection = self.connect()?;
+
+        connection
+            .execute(
+                "
+                UPDATE processes
+                SET status = 'exited', exit_code = ?1, finished_at = CURRENT_TIMESTAMP
+                WHERE id = ?2
+                ",
+                params![exit_code, id],
+            )
+            .context("failed to mark process finished")?;
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn get_process(&self, id: i64) -> Result<ProcessSummary> {
+        let connection = self.connect()?;
+
+        connection
+            .query_row(
+                "SELECT id, status, exit_code, command FROM processes WHERE id = ?1",
+                [id],
+                |row| {
+                    let command: String = row.get(3)?;
+                    Ok(ProcessSummary {
+                        id: row.get(0)?,
+                        status: parse_status(row.get::<_, String>(1)?.as_str()),
+                        exit_code: row.get(2)?,
+                        command: serde_json::from_str(&command).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?,
+                    })
+                },
+            )
+            .context("failed to get process")
+    }
+
+    fn connect(&self) -> Result<Connection> {
+        Connection::open(&self.database_path)
+            .with_context(|| format!("failed to open database {}", self.database_path.display()))
+    }
+}
+
+impl Clone for Store {
+    fn clone(&self) -> Self {
+        Self {
+            database_path: self.database_path.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+fn parse_status(status: &str) -> ProcessStatus {
+    match status {
+        "running" => ProcessStatus::Running,
+        "exited" => ProcessStatus::Exited,
+        "failed" => ProcessStatus::Failed,
+        "killed" => ProcessStatus::Killed,
+        _ => ProcessStatus::Failed,
     }
 }
 
@@ -92,6 +190,28 @@ mod tests {
         let connection = Connection::open(&database_path)?;
         assert!(table_exists(&connection, "processes")?);
         assert!(table_exists(&connection, "process_output")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn insert_and_finish_process_metadata() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let command = vec!["echo".to_owned(), "hello".to_owned()];
+
+        let process = store.insert_process(&command, dir.path(), 1234)?;
+        assert_eq!(process.id, 1);
+        assert_eq!(process.status, ProcessStatus::Running);
+        assert_eq!(process.exit_code, None);
+        assert_eq!(process.command, command);
+
+        store.mark_process_finished(process.id, Some(0))?;
+        let process = store.get_process(process.id)?;
+        assert_eq!(process.status, ProcessStatus::Exited);
+        assert_eq!(process.exit_code, Some(0));
 
         Ok(())
     }

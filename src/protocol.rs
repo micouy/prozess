@@ -29,6 +29,7 @@ impl Request {
 pub enum Response {
     DaemonStatus { socket: String, database: String },
     DaemonStopping,
+    Spawned(ProcessSummary),
     NotImplemented { command: String },
 }
 
@@ -39,7 +40,7 @@ pub enum OutputStream {
     Stderr,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessStatus {
     Running,
     Exited,

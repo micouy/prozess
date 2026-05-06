@@ -61,6 +61,11 @@ fn print_response(response: Result<Response>) -> Result<()> {
             println!("db: {database}");
         }
         Response::DaemonStopping => println!("pz daemon stopped"),
+        Response::Spawned(process) => {
+            println!("spawned process {}", process.id);
+            println!("status: {}", process.status);
+            println!("command: {}", process.command.join(" "));
+        }
         Response::NotImplemented { command } => println!("{command} is not implemented yet"),
     }
 
@@ -74,5 +79,18 @@ impl From<LogStream> for OutputStream {
             LogStream::Stdout => Self::Stdout,
             LogStream::Stderr => Self::Stderr,
         }
+    }
+}
+
+impl std::fmt::Display for crate::protocol::ProcessStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let status = match self {
+            Self::Running => "running",
+            Self::Exited => "exited",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+        };
+
+        formatter.write_str(status)
     }
 }
