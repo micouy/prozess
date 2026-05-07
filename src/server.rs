@@ -649,6 +649,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_reports_listening_ports() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(
+                    vec![
+                        "/usr/bin/python3".to_owned(),
+                        "-m".to_owned(),
+                        "http.server".to_owned(),
+                        "0".to_owned(),
+                        "--bind".to_owned(),
+                        "127.0.0.1".to_owned(),
+                    ],
+                    dir.path(),
+                ),
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        let ports = wait_for_ports(&client, process.id).await?;
+        assert!(ports.iter().any(|port| port.local_addr == "127.0.0.1"));
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: true,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn daemon_restarts_process_from_env_files() -> Result<()> {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
@@ -958,5 +1005,25 @@ mod tests {
         }
 
         bail!("process {id} did not produce output")
+    }
+
+    async fn wait_for_ports(client: &Client, id: i64) -> Result<Vec<crate::protocol::PortInfo>> {
+        for _ in 0..100 {
+            let response = client
+                .send(Request::Ports {
+                    selector: ProcessSelector::Id(id),
+                })
+                .await?;
+            let Response::PortList(ports) = response else {
+                bail!("expected port list response");
+            };
+            if !ports.ports.is_empty() {
+                return Ok(ports.ports);
+            }
+
+            sleep(Duration::from_millis(50)).await;
+        }
+
+        bail!("process {id} did not expose listening ports")
     }
 }

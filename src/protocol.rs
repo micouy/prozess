@@ -26,6 +26,9 @@ pub enum Request {
     Resources {
         selector: ProcessSelector,
     },
+    Ports {
+        selector: ProcessSelector,
+    },
     ListProcesses,
     ShowProcess {
         selector: ProcessSelector,
@@ -78,6 +81,7 @@ impl Request {
             Self::WaitProcess { .. } => "wait",
             Self::RestartProcess { .. } => "restart",
             Self::Resources { .. } => "resources",
+            Self::Ports { .. } => "ports",
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",
@@ -106,6 +110,7 @@ pub enum Response {
     ProcessList(Vec<ProcessSummary>),
     ProcessDetails(ProcessDetails),
     ResourceSnapshot(ResourceSnapshot),
+    PortList(PortList),
     Output(Vec<OutputChunk>),
     Error {
         message: String,
@@ -192,4 +197,21 @@ pub struct ResourceProcess {
     pub name: String,
     pub memory_bytes: u64,
     pub cpu_percent: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortList {
+    pub process_id: i64,
+    pub name: Option<String>,
+    pub status: ProcessStatus,
+    pub ports: Vec<PortInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortInfo {
+    pub protocol: String,
+    pub state: String,
+    pub local_addr: String,
+    pub local_port: u16,
+    pub pids: Vec<u32>,
 }

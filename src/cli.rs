@@ -35,6 +35,9 @@ pub enum Command {
     /// Show current CPU and memory usage for a running process group.
     Resources { process: String },
 
+    /// Show listening TCP ports owned by a running process group.
+    Ports { process: String },
+
     /// List tracked processes.
     Ps,
 

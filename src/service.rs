@@ -1,13 +1,14 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use netstat2::{AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::{
     daemon_state::{DaemonState, ProcessLifecycle},
     protocol::{
-        ProcessDetails, ProcessStatus, Request, ResourceProcess, ResourceSnapshot, Response,
-        StopSignal,
+        PortInfo, PortList, ProcessDetails, ProcessStatus, Request, ResourceProcess,
+        ResourceSnapshot, Response, StopSignal,
     },
     store::{Store, TimeoutSpec},
     supervisor::Supervisor,
@@ -59,6 +60,7 @@ impl Service {
             Request::Resources { selector } => {
                 Response::ResourceSnapshot(self.resources(&selector)?)
             }
+            Request::Ports { selector } => Response::PortList(self.ports(&selector)?),
             Request::ListProcesses => Response::ProcessList(self.store.list_processes()?),
             Request::ShowProcess { selector } => Response::ProcessDetails(
                 self.store
@@ -163,6 +165,78 @@ impl Service {
             total_cpu_percent,
             processes,
         })
+    }
+
+    fn ports(&self, selector: &crate::protocol::ProcessSelector) -> Result<PortList> {
+        let id = self.store.resolve_process_id(selector)?;
+        let details = self.store.get_process_details(id)?;
+        if details.status != ProcessStatus::Running {
+            return Ok(PortList {
+                process_id: details.id,
+                name: details.name,
+                status: details.status,
+                ports: Vec::new(),
+            });
+        }
+
+        let pids = self.process_group_pids(&details)?;
+        let sockets = netstat2::get_sockets_info(
+            AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6,
+            ProtocolFlags::TCP,
+        )?;
+        let mut ports = Vec::new();
+
+        for socket in sockets {
+            let ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info else {
+                continue;
+            };
+            if tcp.state != TcpState::Listen {
+                continue;
+            }
+
+            let associated_pids = socket
+                .associated_pids
+                .into_iter()
+                .filter(|pid| pids.contains(pid))
+                .collect::<Vec<_>>();
+            if associated_pids.is_empty() {
+                continue;
+            }
+
+            ports.push(PortInfo {
+                protocol: "tcp".to_owned(),
+                state: "listen".to_owned(),
+                local_addr: tcp.local_addr.to_string(),
+                local_port: tcp.local_port,
+                pids: associated_pids,
+            });
+        }
+
+        ports.sort_by_key(|port| (port.local_port, port.local_addr.clone()));
+
+        Ok(PortList {
+            process_id: details.id,
+            name: details.name,
+            status: details.status,
+            ports,
+        })
+    }
+
+    fn process_group_pids(&self, details: &ProcessDetails) -> Result<Vec<u32>> {
+        let Some(pgid) = details.pgid.or(details.pid) else {
+            return Ok(Vec::new());
+        };
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        let mut pids = system
+            .processes()
+            .keys()
+            .map(|pid| pid.as_u32())
+            .filter(|pid| process_group_id(*pid) == Some(pgid))
+            .collect::<Vec<_>>();
+
+        pids.sort_unstable();
+        Ok(pids)
     }
 
     fn set_timeout_for_id(&self, id: i64, timeout_ms: Option<u64>) -> Result<()> {

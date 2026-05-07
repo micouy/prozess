@@ -77,6 +77,13 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
+        Command::Ports { process } => print_response(
+            Client::new()
+                .send(Request::Ports {
+                    selector: process_selector(&process),
+                })
+                .await,
+        ),
         Command::Ps => print_response(Client::new().send(Request::ListProcesses).await),
         Command::Show { process } => print_response(
             Client::new()
@@ -308,6 +315,7 @@ fn print_response(response: Result<Response>) -> Result<()> {
         Response::ProcessList(processes) => print_process_list(&processes),
         Response::ProcessDetails(process) => print_process_details(&process),
         Response::ResourceSnapshot(snapshot) => print_resource_snapshot(&snapshot),
+        Response::PortList(ports) => print_ports(&ports),
         Response::Output(chunks) => {
             print_output(&chunks)?;
         }
@@ -315,6 +323,40 @@ fn print_response(response: Result<Response>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_ports(ports: &crate::protocol::PortList) {
+    println!("id: {}", ports.process_id);
+    if let Some(name) = &ports.name {
+        println!("name: {name}");
+    }
+    println!("status: {}", ports.status);
+
+    if ports.status != ProcessStatus::Running {
+        println!("ports: unavailable for non-running process");
+        return;
+    }
+
+    if ports.ports.is_empty() {
+        println!("ports: none");
+        return;
+    }
+
+    println!();
+    println!("{:<6} {:<8} {:<22} PIDS", "PROTO", "STATE", "LOCAL");
+    for port in &ports.ports {
+        println!(
+            "{:<6} {:<8} {:<22} {}",
+            port.protocol,
+            port.state,
+            format!("{}:{}", port.local_addr, port.local_port),
+            port.pids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
 }
 
 fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) {
