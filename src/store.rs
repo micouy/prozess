@@ -129,6 +129,7 @@ impl Store {
             error_message: None,
             timeout_ms,
             timeout_at_ms,
+            ports: Vec::new(),
             command: command.to_vec(),
             env: ProcessEnvSummary {
                 inherit_env,
@@ -177,6 +178,7 @@ impl Store {
             error_message: Some(error_message.to_owned()),
             timeout_ms: None,
             timeout_at_ms: None,
+            ports: Vec::new(),
             command: command.to_vec(),
             env: ProcessEnvSummary {
                 inherit_env,
@@ -235,6 +237,22 @@ impl Store {
             .context("failed to mark process timed out")?;
 
         Ok(())
+    }
+
+    pub fn mark_running_processes_lost(&self) -> Result<usize> {
+        let connection = self.connect()?;
+        let changed = connection
+            .execute(
+                "
+                UPDATE processes
+                SET status = 'lost', finished_at = CURRENT_TIMESTAMP
+                WHERE status = 'running'
+                ",
+                [],
+            )
+            .context("failed to mark running processes lost")?;
+
+        Ok(changed)
     }
 
     pub fn set_timeout(&self, id: i64, timeout: Option<TimeoutSpec>) -> Result<()> {
@@ -441,6 +459,7 @@ fn parse_status(status: &str) -> ProcessStatus {
         "failed" => ProcessStatus::Failed,
         "killed" => ProcessStatus::Killed,
         "timed_out" => ProcessStatus::TimedOut,
+        "lost" => ProcessStatus::Lost,
         _ => ProcessStatus::Failed,
     }
 }
@@ -502,6 +521,7 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         error_message: row.get(7)?,
         timeout_ms: row.get(8)?,
         timeout_at_ms: row.get(9)?,
+        ports: Vec::new(),
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
                 6,
@@ -793,6 +813,41 @@ mod tests {
         store.mark_process_killed(process.id)?;
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, ProcessStatus::Killed);
+
+        Ok(())
+    }
+
+    #[test]
+    fn mark_running_processes_lost_sets_only_running_rows() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let running = store.insert_process(
+            Some("running"),
+            &["sleep".to_owned()],
+            dir.path(),
+            1234,
+            1234,
+            false,
+            &[],
+            &[],
+        )?;
+        let exited = store.insert_process(
+            Some("exited"),
+            &["true".to_owned()],
+            dir.path(),
+            1235,
+            1235,
+            false,
+            &[],
+            &[],
+        )?;
+        store.mark_process_finished(exited.id, Some(0))?;
+
+        assert_eq!(store.mark_running_processes_lost()?, 1);
+        assert_eq!(store.get_process(running.id)?.status, ProcessStatus::Lost);
+        assert_eq!(store.get_process(exited.id)?.status, ProcessStatus::Exited);
 
         Ok(())
     }

@@ -118,9 +118,10 @@ async fn wait_process(selector: ProcessSelector) -> Result<()> {
     match response {
         Response::WaitedProcess(process) => match process.status {
             ProcessStatus::Exited => std::process::exit(process.exit_code.unwrap_or(1)),
-            ProcessStatus::Killed | ProcessStatus::Failed | ProcessStatus::TimedOut => {
-                std::process::exit(1)
-            }
+            ProcessStatus::Killed
+            | ProcessStatus::Failed
+            | ProcessStatus::TimedOut
+            | ProcessStatus::Lost => std::process::exit(1),
             ProcessStatus::Running => bail!("process is still running"),
         },
         Response::Error { message } => bail!(message),
@@ -485,8 +486,8 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
 
 fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
     println!(
-        "{:<3} {:<16} {:<10} {:<6} {:<5} COMMAND / ERROR",
-        "ID", "NAME", "STATUS", "PID", "EXIT"
+        "{:<3} {:<16} {:<11} {:<12} {:<6} {:<5} COMMAND / ERROR",
+        "ID", "NAME", "STATUS", "PORTS", "PID", "EXIT"
     );
 
     for process in processes {
@@ -506,14 +507,27 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
         };
 
         println!(
-            "{:<3} {:<16} {:<10} {:<6} {:<5} {}",
+            "{:<3} {:<16} {:<11} {:<12} {:<6} {:<5} {}",
             process.id,
             process.name.as_deref().unwrap_or("-"),
             process.status,
+            format_ports(&process.ports),
             pid,
             exit,
             command
         );
+    }
+}
+
+fn format_ports(ports: &[u16]) -> String {
+    if ports.is_empty() {
+        "-".to_owned()
+    } else {
+        ports
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 
@@ -535,6 +549,7 @@ impl std::fmt::Display for crate::protocol::ProcessStatus {
             Self::Failed => "failed",
             Self::Killed => "killed",
             Self::TimedOut => "timed_out",
+            Self::Lost => "lost",
         };
 
         formatter.write_str(status)

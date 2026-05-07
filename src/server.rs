@@ -76,6 +76,7 @@ pub async fn run() -> Result<()> {
 pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> Result<()> {
     prepare_socket(&socket_path).await?;
     let store = Store::open(StoreConfig { database_path })?;
+    store.mark_running_processes_lost()?;
     let state = DaemonState::default();
     let service = Service::new(
         store,
@@ -682,6 +683,16 @@ mod tests {
 
         let ports = wait_for_ports(&client, process.id).await?;
         assert!(ports.iter().any(|port| port.local_addr == "127.0.0.1"));
+
+        let response = client.send(Request::ListProcesses).await?;
+        let Response::ProcessList(processes) = response else {
+            bail!("expected process list response");
+        };
+        let process = processes
+            .into_iter()
+            .find(|listed| listed.id == process.id)
+            .context("spawned process should be listed")?;
+        assert!(!process.ports.is_empty());
 
         client
             .send(Request::StopProcess {

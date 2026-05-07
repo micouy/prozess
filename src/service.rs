@@ -61,7 +61,7 @@ impl Service {
                 Response::ResourceSnapshot(self.resources(&selector)?)
             }
             Request::Ports { selector } => Response::PortList(self.ports(&selector)?),
-            Request::ListProcesses => Response::ProcessList(self.store.list_processes()?),
+            Request::ListProcesses => Response::ProcessList(self.list_processes()?),
             Request::ShowProcess { selector } => Response::ProcessDetails(
                 self.store
                     .get_process_details(self.store.resolve_process_id(&selector)?)?,
@@ -92,6 +92,26 @@ impl Service {
         }
 
         Ok(process)
+    }
+
+    fn list_processes(&self) -> Result<Vec<crate::protocol::ProcessSummary>> {
+        let mut processes = self.store.list_processes()?;
+        for process in &mut processes {
+            if process.status != ProcessStatus::Running {
+                continue;
+            }
+
+            let details = self.store.get_process_details(process.id)?;
+            process.ports = self
+                .ports_for_details(&details)?
+                .into_iter()
+                .map(|port| port.local_port)
+                .collect();
+            process.ports.sort_unstable();
+            process.ports.dedup();
+        }
+
+        Ok(processes)
     }
 
     fn restart_process(
@@ -179,7 +199,22 @@ impl Service {
             });
         }
 
-        let pids = self.process_group_pids(&details)?;
+        let ports = self.ports_for_details(&details)?;
+
+        Ok(PortList {
+            process_id: details.id,
+            name: details.name,
+            status: details.status,
+            ports,
+        })
+    }
+
+    fn ports_for_details(&self, details: &ProcessDetails) -> Result<Vec<PortInfo>> {
+        if details.status != ProcessStatus::Running {
+            return Ok(Vec::new());
+        }
+
+        let pids = self.process_group_pids(details)?;
         let sockets = netstat2::get_sockets_info(
             AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6,
             ProtocolFlags::TCP,
@@ -214,12 +249,7 @@ impl Service {
 
         ports.sort_by_key(|port| (port.local_port, port.local_addr.clone()));
 
-        Ok(PortList {
-            process_id: details.id,
-            name: details.name,
-            status: details.status,
-            ports,
-        })
+        Ok(ports)
     }
 
     fn process_group_pids(&self, details: &ProcessDetails) -> Result<Vec<u32>> {

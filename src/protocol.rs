@@ -144,6 +144,7 @@ pub enum ProcessStatus {
     Failed,
     Killed,
     TimedOut,
+    Lost,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +158,7 @@ pub struct ProcessSummary {
     pub error_message: Option<String>,
     pub timeout_ms: Option<u64>,
     pub timeout_at_ms: Option<i64>,
+    pub ports: Vec<u16>,
     pub command: Vec<String>,
     pub env: ProcessEnvSummary,
 }
