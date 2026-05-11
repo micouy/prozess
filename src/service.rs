@@ -104,6 +104,7 @@ impl Service {
             let details = self.store.get_process_details(process.id)?;
             process.ports = self
                 .ports_for_details(&details)?
+                .unwrap_or_default()
                 .into_iter()
                 .map(|port| port.local_port)
                 .collect();
@@ -195,30 +196,39 @@ impl Service {
                 process_id: details.id,
                 name: details.name,
                 status: details.status,
+                unavailable: false,
                 ports: Vec::new(),
             });
         }
 
         let ports = self.ports_for_details(&details)?;
+        let unavailable = ports.is_none();
 
         Ok(PortList {
             process_id: details.id,
             name: details.name,
             status: details.status,
-            ports,
+            unavailable,
+            ports: ports.unwrap_or_default(),
         })
     }
 
-    fn ports_for_details(&self, details: &ProcessDetails) -> Result<Vec<PortInfo>> {
+    fn ports_for_details(&self, details: &ProcessDetails) -> Result<Option<Vec<PortInfo>>> {
         if details.status != ProcessStatus::Running {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         }
 
         let pids = self.process_group_pids(details)?;
-        let sockets = netstat2::get_sockets_info(
+        let sockets = match netstat2::get_sockets_info(
             AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6,
             ProtocolFlags::TCP,
-        )?;
+        ) {
+            Ok(sockets) => sockets,
+            Err(error) => {
+                eprintln!("port discovery unavailable: {error}");
+                return Ok(None);
+            }
+        };
         let mut ports = Vec::new();
 
         for socket in sockets {
@@ -249,7 +259,7 @@ impl Service {
 
         ports.sort_by_key(|port| (port.local_port, port.local_addr.clone()));
 
-        Ok(ports)
+        Ok(Some(ports))
     }
 
     fn process_group_pids(&self, details: &ProcessDetails) -> Result<Vec<u32>> {

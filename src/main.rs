@@ -338,6 +338,11 @@ fn print_ports(ports: &crate::protocol::PortList) {
         return;
     }
 
+    if ports.unavailable {
+        println!("ports: unavailable");
+        return;
+    }
+
     if ports.ports.is_empty() {
         println!("ports: none");
         return;
@@ -486,7 +491,7 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
 
 fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
     println!(
-        "{:<3} {:<16} {:<11} {:<12} {:<6} {:<5} COMMAND / ERROR",
+        "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} COMMAND / ERROR",
         "ID", "NAME", "STATUS", "PORTS", "PID", "EXIT"
     );
 
@@ -507,7 +512,7 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
         };
 
         println!(
-            "{:<3} {:<16} {:<11} {:<12} {:<6} {:<5} {}",
+            "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} {}",
             process.id,
             process.name.as_deref().unwrap_or("-"),
             process.status,

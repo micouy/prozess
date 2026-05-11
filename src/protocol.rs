@@ -206,6 +206,7 @@ pub struct PortList {
     pub process_id: i64,
     pub name: Option<String>,
     pub status: ProcessStatus,
+    pub unavailable: bool,
     pub ports: Vec<PortInfo>,
 }
 
