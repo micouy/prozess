@@ -7,7 +7,7 @@ The CLI is only one client. The daemon owns the processes so commands keep runni
 ## Install
 
 ```sh
-cargo install --path . --root "$HOME/.local" --force
+cargo install pz
 ```
 
 ## Daemon

@@ -2,6 +2,20 @@
 name = "pz"
 version = "0.1.0"
 edition = "2024"
+description = "Agent-friendly process manager"
+license = "MIT"
+repository = "https://github.com/micouy/prozess"
+readme = "README.md"
+keywords = ["cli", "daemon", "process", "supervisor"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+    "src/**",
+    "tests/**",
+]
 
 [dependencies]
 anyhow = "1.0.98"
