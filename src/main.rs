@@ -238,6 +238,7 @@ fn parse_env_var(value: &str) -> Result<EnvVar> {
 async fn follow_logs(selector: ProcessSelector, stream: OutputStream) -> Result<()> {
     let client = Client::new();
     let mut after_id = None;
+    let mut quiet_polls_after_exit = 0;
 
     loop {
         let chunks = match client
@@ -266,7 +267,13 @@ async fn follow_logs(selector: ProcessSelector, stream: OutputStream) -> Result<
             _ => bail!("daemon returned an unexpected process response"),
         };
 
-        if !is_running && !printed_any {
+        if is_running || printed_any {
+            quiet_polls_after_exit = 0;
+        } else {
+            quiet_polls_after_exit += 1;
+        }
+
+        if !is_running && quiet_polls_after_exit >= 3 {
             break;
         }
 
