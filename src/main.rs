@@ -516,7 +516,7 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
             process.id,
             process.name.as_deref().unwrap_or("-"),
             process.status,
-            format_ports(&process.ports),
+            format_ports(process.ports_unavailable, &process.ports),
             pid,
             exit,
             command
@@ -524,8 +524,10 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
     }
 }
 
-fn format_ports(ports: &[u16]) -> String {
-    if ports.is_empty() {
+fn format_ports(unavailable: bool, ports: &[u16]) -> String {
+    if unavailable {
+        "?".to_owned()
+    } else if ports.is_empty() {
         "-".to_owned()
     } else {
         ports

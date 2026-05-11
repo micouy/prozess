@@ -158,6 +158,7 @@ pub struct ProcessSummary {
     pub error_message: Option<String>,
     pub timeout_ms: Option<u64>,
     pub timeout_at_ms: Option<i64>,
+    pub ports_unavailable: bool,
     pub ports: Vec<u16>,
     pub command: Vec<String>,
     pub env: ProcessEnvSummary,

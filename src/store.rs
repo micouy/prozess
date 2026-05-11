@@ -129,6 +129,7 @@ impl Store {
             error_message: None,
             timeout_ms,
             timeout_at_ms,
+            ports_unavailable: false,
             ports: Vec::new(),
             command: command.to_vec(),
             env: ProcessEnvSummary {
@@ -178,6 +179,7 @@ impl Store {
             error_message: Some(error_message.to_owned()),
             timeout_ms: None,
             timeout_at_ms: None,
+            ports_unavailable: false,
             ports: Vec::new(),
             command: command.to_vec(),
             env: ProcessEnvSummary {
@@ -521,6 +523,7 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         error_message: row.get(7)?,
         timeout_ms: row.get(8)?,
         timeout_at_ms: row.get(9)?,
+        ports_unavailable: false,
         ports: Vec::new(),
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(

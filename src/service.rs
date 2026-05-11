@@ -102,8 +102,9 @@ impl Service {
             }
 
             let details = self.store.get_process_details(process.id)?;
-            process.ports = self
-                .ports_for_details(&details)?
+            let ports = self.ports_for_details(&details)?;
+            process.ports_unavailable = ports.is_none();
+            process.ports = ports
                 .unwrap_or_default()
                 .into_iter()
                 .map(|port| port.local_port)
