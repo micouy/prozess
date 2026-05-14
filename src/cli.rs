@@ -125,6 +125,18 @@ pub struct LogsArgs {
     /// Continue printing new output as it arrives.
     #[arg(short, long)]
     pub follow: bool,
+
+    /// Print only the last N lines.
+    #[arg(long)]
+    pub tail: Option<usize>,
+
+    /// Show chunks captured in the last duration, e.g. 10s, 5m, 1h.
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Show chunks captured until this duration ago, e.g. 10s, 5m, 1h.
+    #[arg(long)]
+    pub until: Option<String>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]

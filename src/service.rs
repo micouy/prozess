@@ -70,10 +70,14 @@ impl Service {
                 selector,
                 stream,
                 after_id,
+                since_ms,
+                until_ms,
             } => Response::Output(self.store.read_output(
                 self.store.resolve_process_id(&selector)?,
                 stream,
                 after_id,
+                since_ms,
+                until_ms,
             )?),
         };
 

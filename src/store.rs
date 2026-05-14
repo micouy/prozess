@@ -373,14 +373,15 @@ impl Store {
         chunk: &[u8],
     ) -> Result<()> {
         let connection = self.connect()?;
+        let created_at_ms = now_ms()?;
 
         connection
             .execute(
                 "
-                INSERT INTO process_output (process_id, stream, chunk)
-                VALUES (?1, ?2, ?3)
+                INSERT INTO process_output (process_id, stream, chunk, created_at_ms)
+                VALUES (?1, ?2, ?3, ?4)
                 ",
-                params![process_id, stream_name(stream), chunk],
+                params![process_id, stream_name(stream), chunk, created_at_ms],
             )
             .context("failed to insert output chunk")?;
 
@@ -392,6 +393,8 @@ impl Store {
         process_id: i64,
         stream: OutputStream,
         after_id: Option<i64>,
+        since_ms: Option<i64>,
+        until_ms: Option<i64>,
     ) -> Result<Vec<OutputChunk>> {
         let connection = self.connect()?;
         let (sql, stream_filter) = match stream {
@@ -399,7 +402,10 @@ impl Store {
                 "
                 SELECT id, stream, chunk
                 FROM process_output
-                WHERE process_id = ?1 AND id > ?2
+                WHERE process_id = ?1
+                    AND id > ?2
+                    AND (?3 IS NULL OR created_at_ms >= ?3)
+                    AND (?4 IS NULL OR created_at_ms <= ?4)
                 ORDER BY id ASC
                 ",
                 None,
@@ -408,7 +414,11 @@ impl Store {
                 "
                 SELECT id, stream, chunk
                 FROM process_output
-                WHERE process_id = ?1 AND id > ?2 AND stream = ?3
+                WHERE process_id = ?1
+                    AND id > ?2
+                    AND (?3 IS NULL OR created_at_ms >= ?3)
+                    AND (?4 IS NULL OR created_at_ms <= ?4)
+                    AND stream = ?5
                 ORDER BY id ASC
                 ",
                 Some(stream_name(stream)),
@@ -421,7 +431,13 @@ impl Store {
         let chunks = if let Some(stream_filter) = stream_filter {
             statement
                 .query_map(
-                    params![process_id, after_id.unwrap_or(0), stream_filter],
+                    params![
+                        process_id,
+                        after_id.unwrap_or(0),
+                        since_ms,
+                        until_ms,
+                        stream_filter
+                    ],
                     output_chunk_from_row,
                 )
                 .context("failed to read output")?
@@ -429,7 +445,7 @@ impl Store {
         } else {
             statement
                 .query_map(
-                    params![process_id, after_id.unwrap_or(0)],
+                    params![process_id, after_id.unwrap_or(0), since_ms, until_ms],
                     output_chunk_from_row,
                 )
                 .context("failed to read output")?
@@ -619,11 +635,21 @@ fn migrate(connection: &Connection) -> Result<()> {
                 process_id INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
                 stream TEXT NOT NULL CHECK (stream IN ('stdout', 'stderr')),
                 chunk BLOB NOT NULL,
+                created_at_ms INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             ",
         )
         .context("failed to initialize database schema")?;
+
+    if !column_exists(connection, "process_output", "created_at_ms")? {
+        connection
+            .execute(
+                "ALTER TABLE process_output ADD COLUMN created_at_ms INTEGER",
+                [],
+            )
+            .context("failed to add process_output created_at_ms column")?;
+    }
 
     if !column_exists(connection, "processes", "name")? {
         connection
@@ -696,6 +722,14 @@ fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<b
         .context("failed to read table schema")?;
 
     Ok(columns.iter().any(|name| name == column))
+}
+
+fn now_ms() -> Result<i64> {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?;
+
+    i64::try_from(duration.as_millis()).context("current timestamp does not fit in i64")
 }
 
 #[cfg(test)]
@@ -1002,18 +1036,18 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"out\n")?;
         store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;
 
-        let chunks = store.read_output(process.id, OutputStream::All, None)?;
+        let chunks = store.read_output(process.id, OutputStream::All, None, None, None)?;
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].id, 1);
         assert_eq!(chunks[1].id, 2);
         assert_eq!(chunks[0].data, b"out\n");
         assert_eq!(chunks[1].data, b"err\n");
 
-        let chunks = store.read_output(process.id, OutputStream::Stderr, None)?;
+        let chunks = store.read_output(process.id, OutputStream::Stderr, None, None, None)?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"err\n");
 
-        let chunks = store.read_output(process.id, OutputStream::All, Some(1))?;
+        let chunks = store.read_output(process.id, OutputStream::All, Some(1), None, None)?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].id, 2);
 

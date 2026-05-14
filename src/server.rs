@@ -313,6 +313,8 @@ mod tests {
                 selector: ProcessSelector::Id(process.id),
                 stream: crate::protocol::OutputStream::Stdout,
                 after_id: None,
+                since_ms: None,
+                until_ms: None,
             })
             .await?;
         let Response::Output(chunks) = response else {
@@ -907,6 +909,8 @@ mod tests {
                 selector: ProcessSelector::Name("logs".to_owned()),
                 stream: crate::protocol::OutputStream::Stdout,
                 after_id: None,
+                since_ms: None,
+                until_ms: None,
             })
             .await?;
         let Response::Output(chunks) = response else {
@@ -979,7 +983,7 @@ mod tests {
 
         for _ in 0..100 {
             let output = store
-                .read_output(id, stream, None)?
+                .read_output(id, stream, None, None, None)?
                 .into_iter()
                 .flat_map(|chunk| chunk.data)
                 .collect::<Vec<_>>();
@@ -1004,7 +1008,7 @@ mod tests {
 
         for _ in 0..100 {
             let output = store
-                .read_output(id, stream, None)?
+                .read_output(id, stream, None, None, None)?
                 .into_iter()
                 .flat_map(|chunk| chunk.data)
                 .collect::<Vec<_>>();

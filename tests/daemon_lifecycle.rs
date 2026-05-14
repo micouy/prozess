@@ -98,6 +98,34 @@ fn logs_follow_prints_output_and_exits() -> Result<()> {
 }
 
 #[test]
+fn logs_tail_limits_output_lines() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--", "/usr/bin/printf", "one\\ntwo\\nthree\\n"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["wait", "1"])?;
+    let logs = run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "1", "--tail", "2"],
+    )?;
+    assert_eq!(String::from_utf8(logs.stdout)?, "two\nthree\n");
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn wait_exits_with_process_status() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;

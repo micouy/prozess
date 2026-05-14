@@ -97,14 +97,17 @@ async fn main() -> Result<()> {
             if args.follow {
                 follow_logs(process_selector(&args.process), args.channel.into()).await
             } else {
-                print_response(
+                print_logs_response(
                     Client::new()
                         .send(Request::ReadLogs {
                             selector: process_selector(&args.process),
                             stream: args.channel.into(),
                             after_id: None,
+                            since_ms: cutoff_ms(args.since.as_deref())?,
+                            until_ms: cutoff_ms(args.until.as_deref())?,
                         })
                         .await,
+                    args.tail,
                 )
             }
         }
@@ -270,6 +273,27 @@ fn parse_duration_ms(value: &str) -> Result<u64> {
         .context("timeout duration is too large")
 }
 
+fn cutoff_ms(value: Option<&str>) -> Result<Option<i64>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let duration_ms = parse_duration_ms(value)?;
+    let now = now_ms()?;
+    let duration_ms = i64::try_from(duration_ms).context("duration does not fit in i64")?;
+
+    now.checked_sub(duration_ms)
+        .context("duration is too large")
+        .map(Some)
+}
+
+fn now_ms() -> Result<i64> {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?;
+
+    i64::try_from(duration.as_millis()).context("current timestamp does not fit in i64")
+}
+
 fn process_selector(value: &str) -> ProcessSelector {
     value
         .parse::<i64>()
@@ -312,6 +336,8 @@ async fn follow_logs(selector: ProcessSelector, stream: OutputStream) -> Result<
                 selector: selector.clone(),
                 stream,
                 after_id,
+                since_ms: None,
+                until_ms: None,
             })
             .await?
         {
@@ -394,6 +420,18 @@ fn print_response(response: Result<Response>) -> Result<()> {
             print_output(&chunks)?;
         }
         Response::Error { message } => bail!(message),
+    }
+
+    Ok(())
+}
+
+fn print_logs_response(response: Result<Response>, tail_lines: Option<usize>) -> Result<()> {
+    match response? {
+        Response::Output(chunks) => {
+            print_output_with_tail(&chunks, tail_lines)?;
+        }
+        Response::Error { message } => bail!(message),
+        _ => bail!("daemon returned an unexpected logs response"),
     }
 
     Ok(())
@@ -516,6 +554,34 @@ fn print_output(chunks: &[OutputChunk]) -> Result<Option<i64>> {
         stdout.flush().context("failed to flush output")?;
         last_id = Some(chunk.id);
     }
+
+    Ok(last_id)
+}
+
+fn print_output_with_tail(
+    chunks: &[OutputChunk],
+    tail_lines: Option<usize>,
+) -> Result<Option<i64>> {
+    let Some(tail_lines) = tail_lines else {
+        return print_output(chunks);
+    };
+    let last_id = chunks.last().map(|chunk| chunk.id);
+    let data = chunks
+        .iter()
+        .flat_map(|chunk| chunk.data.iter().copied())
+        .collect::<Vec<_>>();
+    let text = String::from_utf8_lossy(&data);
+    let lines = text.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(tail_lines);
+    let mut stdout = std::io::stdout().lock();
+
+    for line in &lines[start..] {
+        stdout
+            .write_all(line.as_bytes())
+            .context("failed to write output")?;
+        stdout.write_all(b"\n").context("failed to write output")?;
+    }
+    stdout.flush().context("failed to flush output")?;
 
     Ok(last_id)
 }

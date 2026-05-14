@@ -37,6 +37,8 @@ pub enum Request {
         selector: ProcessSelector,
         stream: OutputStream,
         after_id: Option<i64>,
+        since_ms: Option<i64>,
+        until_ms: Option<i64>,
     },
 }
 
