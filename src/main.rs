@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
+        Command::Status => print_status().await,
         Command::Wait { process } => wait_process(process_selector(&process)).await,
         Command::Restart { process } => print_response(
             Client::new()
@@ -108,6 +109,71 @@ async fn main() -> Result<()> {
             }
         }
     }
+}
+
+async fn print_status() -> Result<()> {
+    let client = Client::new();
+    let daemon = match client.send(Request::DaemonStatus).await {
+        Ok(Response::DaemonStatus {
+            pid,
+            socket,
+            database,
+        }) => (pid, socket, database),
+        Ok(Response::Error { message }) => bail!(message),
+        Ok(_) => bail!("daemon returned an unexpected status response"),
+        Err(error) => bail!("pz daemon not reachable: {error}"),
+    };
+    let processes = match client.send(Request::ListProcesses).await? {
+        Response::ProcessList(processes) => processes,
+        Response::Error { message } => bail!(message),
+        _ => bail!("daemon returned an unexpected process list response"),
+    };
+    let running = processes
+        .iter()
+        .filter(|process| process.status == ProcessStatus::Running)
+        .count();
+    let failed = processes
+        .iter()
+        .filter(|process| {
+            matches!(
+                process.status,
+                ProcessStatus::Failed | ProcessStatus::TimedOut | ProcessStatus::Lost
+            )
+        })
+        .count();
+
+    println!("pz daemon: running");
+    println!("pid: {}", daemon.0);
+    println!("socket: {}", daemon.1);
+    println!("db: {}", daemon.2);
+    println!(
+        "processes: {} total, {} running, {} attention",
+        processes.len(),
+        running,
+        failed
+    );
+
+    let running_processes = processes
+        .iter()
+        .filter(|process| process.status == ProcessStatus::Running)
+        .take(5)
+        .collect::<Vec<_>>();
+
+    if !running_processes.is_empty() {
+        println!();
+        println!("running:");
+        for process in running_processes {
+            println!(
+                "{} {} ports={} {}",
+                process.id,
+                process.name.as_deref().unwrap_or("-"),
+                format_ports(process.ports_unavailable, &process.ports),
+                process.command.join(" ")
+            );
+        }
+    }
+
+    Ok(())
 }
 
 async fn wait_process(selector: ProcessSelector) -> Result<()> {

@@ -26,6 +26,9 @@ pub enum Command {
     /// Add, replace, or clear a process timeout.
     Timeout(TimeoutArgs),
 
+    /// Show daemon health and process summary.
+    Status,
+
     /// Wait for a process to finish.
     Wait { process: String },
 
