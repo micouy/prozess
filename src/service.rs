@@ -166,6 +166,10 @@ impl Service {
 
         for (pid, process) in system.processes() {
             let pid_u32 = pid.as_u32();
+            if !is_thread_group_leader(pid_u32) {
+                continue;
+            }
+
             if process_group_id(pid_u32) != Some(pgid) {
                 continue;
             }
@@ -280,6 +284,7 @@ impl Service {
             .processes()
             .keys()
             .map(|pid| pid.as_u32())
+            .filter(|pid| is_thread_group_leader(*pid))
             .filter(|pid| process_group_id(*pid) == Some(pgid))
             .collect::<Vec<_>>();
 
@@ -402,6 +407,24 @@ fn process_group_id(pid: u32) -> Option<u32> {
     nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(pid as i32)))
         .ok()
         .and_then(|pgid| u32::try_from(pgid.as_raw()).ok())
+}
+
+fn is_thread_group_leader(pid: u32) -> bool {
+    thread_group_id(pid).is_none_or(|tgid| tgid == pid)
+}
+
+#[cfg(target_os = "linux")]
+fn thread_group_id(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status.lines().find_map(|line| {
+        line.strip_prefix("Tgid:")
+            .and_then(|value| value.trim().parse().ok())
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_group_id(_pid: u32) -> Option<u32> {
+    None
 }
 
 fn now_ms() -> Result<i64> {
