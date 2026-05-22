@@ -153,6 +153,112 @@ fn wait_exits_with_process_status() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn resources_do_not_count_threads_as_process_memory() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let work_dir = tempdir()?;
+    let script = work_dir.path().join("threaded.py");
+    let binary = cargo_bin("pz");
+
+    std::fs::write(
+        &script,
+        r#"
+import threading
+import time
+
+buf = bytearray(64 * 1024 * 1024)
+threads = []
+for _ in range(32):
+    thread = threading.Thread(target=time.sleep, args=(30,), daemon=True)
+    thread.start()
+    threads.append(thread)
+
+print("ready", flush=True)
+time.sleep(30)
+"#,
+    )?;
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &[
+            "run",
+            "--name",
+            "threaded-memory",
+            "--",
+            "/usr/bin/python3",
+            script.to_str().context("script path should be utf-8")?,
+        ],
+    )?;
+
+    for _ in 0..100 {
+        let logs = run_pz(
+            &binary,
+            &runtime_dir,
+            &state_dir,
+            &["logs", "threaded-memory", "stdout"],
+        )?;
+        if String::from_utf8(logs.stdout)?.contains("ready") {
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+
+    let resources = run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["resources", "threaded-memory"],
+    )?;
+    let resources = String::from_utf8(resources.stdout)?;
+    assert!(resources.contains("status: running"), "{resources}");
+    assert!(resources.contains("processes: 1"), "{resources}");
+    assert_memory_below(&resources, 512.0)?;
+
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["stop", "threaded-memory", "--force"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn assert_memory_below(resources: &str, max_mb: f64) -> Result<()> {
+    let memory = resources
+        .lines()
+        .find_map(|line| line.strip_prefix("memory: "))
+        .context("resources should include memory line")?;
+    let mut parts = memory.split_whitespace();
+    let value = parts
+        .next()
+        .context("memory should include value")?
+        .parse::<f64>()?;
+    let unit = parts.next().context("memory should include unit")?;
+    let mb = match unit {
+        "GB" => value * 1024.0,
+        "MB" => value,
+        "KB" => value / 1024.0,
+        "B" => value / 1024.0 / 1024.0,
+        other => bail!("unexpected memory unit {other:?}"),
+    };
+
+    assert!(
+        mb < max_mb,
+        "expected memory below {max_mb} MB, got {memory}\n{resources}"
+    );
+
+    Ok(())
+}
+
 fn run_pz(
     binary: &std::path::Path,
     runtime_dir: &tempfile::TempDir,
