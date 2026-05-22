@@ -158,14 +158,14 @@ impl Service {
         }
 
         let mut system = System::new();
-        // Do not include Linux task/thread entries here. Threads share their
-        // process address space, so summing memory for threads massively
-        // over-counts RSS for multi-threaded processes.
-        system.refresh_processes(ProcessesToUpdate::All, false);
+        system.refresh_processes(ProcessesToUpdate::All, true);
         let mut processes = Vec::new();
 
         for (pid, process) in system.processes() {
             let pid_u32 = pid.as_u32();
+            // On Linux, sysinfo can surface task/thread entries. Threads share
+            // their process address space, so count only thread-group leaders
+            // to avoid summing the same RSS once per thread.
             if !is_thread_group_leader(pid_u32) {
                 continue;
             }
@@ -279,7 +279,7 @@ impl Service {
             return Ok(Vec::new());
         };
         let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::All, false);
+        system.refresh_processes(ProcessesToUpdate::All, true);
         let mut pids = system
             .processes()
             .keys()
