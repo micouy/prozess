@@ -158,7 +158,10 @@ impl Service {
         }
 
         let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::All, true);
+        // Do not include Linux task/thread entries here. Threads share their
+        // process address space, so summing memory for threads massively
+        // over-counts RSS for multi-threaded processes.
+        system.refresh_processes(ProcessesToUpdate::All, false);
         let mut processes = Vec::new();
 
         for (pid, process) in system.processes() {
@@ -272,7 +275,7 @@ impl Service {
             return Ok(Vec::new());
         };
         let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::All, true);
+        system.refresh_processes(ProcessesToUpdate::All, false);
         let mut pids = system
             .processes()
             .keys()
