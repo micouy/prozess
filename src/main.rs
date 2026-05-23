@@ -117,10 +117,13 @@ fn parse_cli() -> Cli {
     match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
+            let kind = error.kind();
             let _ = error.print();
             if !matches!(
-                error.kind(),
-                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                kind,
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayVersion
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
             ) {
                 let mut command = Cli::command();
                 let mut stderr = std::io::stderr().lock();
