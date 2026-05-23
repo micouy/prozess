@@ -137,6 +137,46 @@ fn wait_exits_with_process_status() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn help_guides_agents_to_managed_processes() -> Result<()> {
+    let binary = cargo_bin("pz");
+    let help = Command::new(&binary)
+        .arg("--help")
+        .output()
+        .context("failed to run pz help")?;
+
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout)?;
+    assert!(stdout.contains("Common usage:"), "{stdout}");
+    assert!(
+        stdout.contains("pz run --name my-app -- npm run dev"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--inherit-env"), "{stdout}");
+    assert!(
+        stdout.contains("Do not use &, nohup, disown, or pkill -f"),
+        "{stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn wrong_top_level_command_prints_help() -> Result<()> {
+    let binary = cargo_bin("pz");
+    let output = Command::new(&binary)
+        .arg("status")
+        .output()
+        .context("failed to run wrong pz command")?;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
+    assert!(stderr.contains("Common usage:"), "{stderr}");
+
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn resources_do_not_count_threads_as_process_memory() -> Result<()> {

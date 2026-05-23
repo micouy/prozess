@@ -16,7 +16,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use crate::cli::{Cli, Command, DaemonCommand, LogStream, RunArgs};
 use crate::client::Client;
@@ -28,7 +28,7 @@ use crate::protocol::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
 
     match cli.command {
         Command::Daemon { command } => match command {
@@ -109,6 +109,25 @@ async fn main() -> Result<()> {
                     args.tail,
                 )
             }
+        }
+    }
+}
+
+fn parse_cli() -> Cli {
+    match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let _ = error.print();
+            if !matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                let mut command = Cli::command();
+                let mut stderr = std::io::stderr().lock();
+                let _ = command.write_help(&mut stderr);
+                let _ = writeln!(stderr);
+            }
+            std::process::exit(error.exit_code());
         }
     }
 }
