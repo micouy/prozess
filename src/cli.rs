@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     name = "pz",
     version,
     about = "Local process manager",
-    after_help = "Common usage:\n  pz run --name my-app -- npm run dev   Start a managed process that survives this shell\n  pz ps                                 Find process names, ids, ports, and failures\n  pz logs my-app --tail 100             Read recent captured logs\n  pz stop my-app                        Stop the tracked process group safely\n  pz daemon status                      Check whether the daemon is reachable\n\nEnvironment:\n  pz uses a controlled environment by default. Use pz run --inherit-env when the command depends on the current shell PATH or environment.\n\nFor long-running commands, use pz run with a stable name. Do not use &, nohup, disown, or pkill -f.\n\nSee also:\n  pz run --help\n  pz logs --help\n  pz stop --help"
+    after_help = "Process ownership:\n  Use pz run --name <name> -- <command> for long-running commands. pz keeps the process, logs, ports, and stop/restart handle after this shell exits. Do not use &, nohup, disown, or pkill -f.\n\nEnvironment:\n  pz uses a controlled environment by default. Use pz run --inherit-env when the command depends on the current shell PATH or environment.\n\nBlocking commands:\n  pz logs -f and pz wait block until the process exits."
 )]
 pub struct Cli {
     #[command(subcommand)]

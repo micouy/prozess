@@ -147,11 +147,8 @@ fn help_guides_agents_to_managed_processes() -> Result<()> {
 
     assert!(help.status.success());
     let stdout = String::from_utf8(help.stdout)?;
-    assert!(stdout.contains("Common usage:"), "{stdout}");
-    assert!(
-        stdout.contains("pz run --name my-app -- npm run dev"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("Process ownership:"), "{stdout}");
+    assert!(stdout.contains("pz run --name <name> -- <command>"), "{stdout}");
     assert!(stdout.contains("--inherit-env"), "{stdout}");
     assert!(
         stdout.contains("Do not use &, nohup, disown, or pkill -f"),
@@ -172,7 +169,7 @@ fn wrong_top_level_command_prints_help() -> Result<()> {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
-    assert!(stderr.contains("Common usage:"), "{stderr}");
+    assert!(stderr.contains("Process ownership:"), "{stderr}");
 
     Ok(())
 }
