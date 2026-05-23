@@ -3,7 +3,12 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "pz", version, about = "Local process manager")]
+#[command(
+    name = "pz",
+    version,
+    about = "Local process manager",
+    after_help = "Common usage:\n  pz run --name my-app -- npm run dev   Start a managed process that survives this shell\n  pz ps                                 Find process names, ids, ports, and failures\n  pz logs my-app --tail 100             Read recent captured logs\n  pz stop my-app                        Stop the tracked process group safely\n  pz daemon status                      Check whether the daemon is reachable\n\nAgent note:\n  Use pz for dev servers, watchers, and other long-running commands. Give each process a stable name. Do not use &, nohup, disown, or pkill -f.\n\nSee also:\n  pz run --help\n  pz logs --help\n  pz stop --help"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -25,9 +30,6 @@ pub enum Command {
 
     /// Add, replace, or clear a process timeout.
     Timeout(TimeoutArgs),
-
-    /// Show daemon health and process summary.
-    Status,
 
     /// Wait for a process to finish.
     Wait { process: String },
@@ -122,7 +124,7 @@ pub struct LogsArgs {
     #[arg(value_enum, default_value_t = LogStream::All)]
     pub channel: LogStream,
 
-    /// Continue printing new output as it arrives.
+    /// Continue printing new output as it arrives. Blocks until the process exits.
     #[arg(short, long)]
     pub follow: bool,
 

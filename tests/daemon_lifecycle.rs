@@ -41,22 +41,6 @@ fn daemon_start_runs_in_background() -> Result<()> {
     let stdout = String::from_utf8(status.stdout)?;
     assert!(stdout.contains("pz daemon running"), "{stdout}");
 
-    let status = Command::new(&binary)
-        .args(["status"])
-        .env("PZ_RUNTIME_DIR", runtime_dir.path())
-        .env("PZ_STATE_DIR", state_dir.path())
-        .output()
-        .context("failed to run pz status")?;
-
-    assert!(
-        status.status.success(),
-        "status failed: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    let stdout = String::from_utf8(status.stdout)?;
-    assert!(stdout.contains("pz daemon: running"), "{stdout}");
-    assert!(stdout.contains("processes:"), "{stdout}");
-
     let stop = Command::new(&binary)
         .args(["daemon", "stop"])
         .env("PZ_RUNTIME_DIR", runtime_dir.path())
