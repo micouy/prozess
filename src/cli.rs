@@ -23,7 +23,7 @@ pub enum Command {
 
     /// Spawn a process through the daemon.
     #[command(
-        after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  pz runs the command directly, not through a shell. Use --name for long-running processes. Do not use &, nohup, disown, or pkill -f."
+        after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  pz runs the command directly, not through a shell. Use --name for long-running processes. Use pz logs <name> --tail 100 instead of redirecting output, pz logs <name> -f instead of foregrounding, and pz stop <name> instead of pkill -f. Do not use &, nohup, or disown."
     )]
     Run(RunArgs),
 
@@ -34,9 +34,6 @@ pub enum Command {
     Stop(StopArgs),
 
     /// Add, replace, or clear a process timeout.
-    #[command(
-        after_help = "Examples:\n  pz timeout my-app 5m\n  pz timeout my-app clear\n\nNotes:\n  Timeouts are enforced by the daemon."
-    )]
     Timeout(TimeoutArgs),
 
     /// Wait for a process to finish.
