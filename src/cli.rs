@@ -21,7 +21,7 @@ pub enum Command {
         command: DaemonCommand,
     },
 
-    /// Start a process through the daemon and return immediately.
+    /// Start a process in the background and return immediately.
     #[command(
         after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  pz runs the command directly, not through a shell. Use --name for long-running processes. Use pz logs <name> --tail 100 instead of redirecting output, pz logs <name> -f instead of foregrounding, and pz stop <name> instead of pkill -f. Do not use &, nohup, or disown."
     )]
