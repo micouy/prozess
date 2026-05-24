@@ -1,6 +1,6 @@
 [package]
 name = "pz"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 description = "Agent-friendly process manager"
 license = "MIT"
