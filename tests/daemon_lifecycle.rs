@@ -41,22 +41,6 @@ fn daemon_start_runs_in_background() -> Result<()> {
     let stdout = String::from_utf8(status.stdout)?;
     assert!(stdout.contains("pz daemon running"), "{stdout}");
 
-    let status = Command::new(&binary)
-        .args(["status"])
-        .env("PZ_RUNTIME_DIR", runtime_dir.path())
-        .env("PZ_STATE_DIR", state_dir.path())
-        .output()
-        .context("failed to run pz status")?;
-
-    assert!(
-        status.status.success(),
-        "status failed: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    let stdout = String::from_utf8(status.stdout)?;
-    assert!(stdout.contains("pz daemon: running"), "{stdout}");
-    assert!(stdout.contains("processes:"), "{stdout}");
-
     let stop = Command::new(&binary)
         .args(["daemon", "stop"])
         .env("PZ_RUNTIME_DIR", runtime_dir.path())
@@ -149,6 +133,59 @@ fn wait_exits_with_process_status() -> Result<()> {
 
     run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
     wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
+fn help_guides_agents_to_managed_processes() -> Result<()> {
+    let binary = cargo_bin("pz");
+    let help = Command::new(&binary)
+        .arg("--help")
+        .output()
+        .context("failed to run pz help")?;
+
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout)?;
+    assert!(stdout.contains("daemon-backed process manager"), "{stdout}");
+    assert!(stdout.contains("explicit environment control"), "{stdout}");
+
+    Ok(())
+}
+
+#[test]
+fn wrong_top_level_command_prints_help() -> Result<()> {
+    let binary = cargo_bin("pz");
+    let output = Command::new(&binary)
+        .arg("status")
+        .output()
+        .context("failed to run wrong pz command")?;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
+    assert!(stderr.contains("daemon-backed process manager"), "{stderr}");
+
+    Ok(())
+}
+
+#[test]
+fn wrong_subcommand_arg_prints_subcommand_help() -> Result<()> {
+    let binary = cargo_bin("pz");
+    let output = Command::new(&binary)
+        .args(["logs", "my-app", "--stream", "stdout"])
+        .output()
+        .context("failed to run wrong pz logs command")?;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("unexpected argument '--stream'"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Usage: logs"), "{stderr}");
+    assert!(stderr.contains("--tail <TAIL>"), "{stderr}");
+    assert!(stderr.contains("Blocks until the process exits"), "{stderr}");
 
     Ok(())
 }

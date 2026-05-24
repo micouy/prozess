@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "pz", version, about = "Local process manager")]
+#[command(
+    name = "pz",
+    version,
+    about = "A daemon-backed process manager with persistent logs, explicit environment control, and resource usage tracking."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -17,22 +21,31 @@ pub enum Command {
         command: DaemonCommand,
     },
 
-    /// Spawn a process through the daemon.
+    /// Start a process in the background and return immediately.
+    #[command(
+        after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  pz runs the command directly, not through a shell. Use --name for long-running processes. Use pz logs <name> --tail 100 instead of redirecting output, pz logs <name> -f instead of foregrounding, and pz stop <name> instead of pkill -f. Do not use &, nohup, or disown."
+    )]
     Run(RunArgs),
 
     /// Stop a running process.
+    #[command(
+        after_help = "Notes:\n  pz stop signals the tracked process group. Use this instead of pkill -f."
+    )]
     Stop(StopArgs),
 
     /// Add, replace, or clear a process timeout.
     Timeout(TimeoutArgs),
 
-    /// Show daemon health and process summary.
-    Status,
-
     /// Wait for a process to finish.
+    #[command(
+        after_help = "Notes:\n  Blocks until the process exits and returns the process exit code."
+    )]
     Wait { process: String },
 
     /// Restart a process from stored command/cwd/env-file metadata.
+    #[command(
+        after_help = "Notes:\n  Inline --env values are not stored, so processes using them cannot be restarted exactly."
+    )]
     Restart { process: String },
 
     /// Show current CPU and memory usage for a running process group.
@@ -122,7 +135,7 @@ pub struct LogsArgs {
     #[arg(value_enum, default_value_t = LogStream::All)]
     pub channel: LogStream,
 
-    /// Continue printing new output as it arrives.
+    /// Continue printing new output as it arrives. Blocks until the process exits.
     #[arg(short, long)]
     pub follow: bool,
 

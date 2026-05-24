@@ -16,7 +16,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser, error::ErrorKind};
 
 use crate::cli::{Cli, Command, DaemonCommand, LogStream, RunArgs};
 use crate::client::Client;
@@ -28,7 +28,7 @@ use crate::protocol::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
 
     match cli.command {
         Command::Daemon { command } => match command {
@@ -62,7 +62,6 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
-        Command::Status => print_status().await,
         Command::Wait { process } => wait_process(process_selector(&process)).await,
         Command::Restart { process } => print_response(
             Client::new()
@@ -114,69 +113,46 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn print_status() -> Result<()> {
-    let client = Client::new();
-    let daemon = match client.send(Request::DaemonStatus).await {
-        Ok(Response::DaemonStatus {
-            pid,
-            socket,
-            database,
-        }) => (pid, socket, database),
-        Ok(Response::Error { message }) => bail!(message),
-        Ok(_) => bail!("daemon returned an unexpected status response"),
-        Err(error) => bail!("pz daemon not reachable: {error}"),
-    };
-    let processes = match client.send(Request::ListProcesses).await? {
-        Response::ProcessList(processes) => processes,
-        Response::Error { message } => bail!(message),
-        _ => bail!("daemon returned an unexpected process list response"),
-    };
-    let running = processes
-        .iter()
-        .filter(|process| process.status == ProcessStatus::Running)
-        .count();
-    let failed = processes
-        .iter()
-        .filter(|process| {
-            matches!(
-                process.status,
-                ProcessStatus::Failed | ProcessStatus::TimedOut | ProcessStatus::Lost
-            )
-        })
-        .count();
-
-    println!("pz daemon: running");
-    println!("pid: {}", daemon.0);
-    println!("socket: {}", daemon.1);
-    println!("db: {}", daemon.2);
-    println!(
-        "processes: {} total, {} running, {} attention",
-        processes.len(),
-        running,
-        failed
-    );
-
-    let running_processes = processes
-        .iter()
-        .filter(|process| process.status == ProcessStatus::Running)
-        .take(5)
-        .collect::<Vec<_>>();
-
-    if !running_processes.is_empty() {
-        println!();
-        println!("running:");
-        for process in running_processes {
-            println!(
-                "{} {} ports={} {}",
-                process.id,
-                process.name.as_deref().unwrap_or("-"),
-                format_ports(process.ports_unavailable, &process.ports),
-                process.command.join(" ")
-            );
+fn parse_cli() -> Cli {
+    match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let kind = error.kind();
+            let _ = error.print();
+            if !matches!(
+                kind,
+                ErrorKind::DisplayHelp
+                    | ErrorKind::DisplayVersion
+                    | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                let mut command = help_command_for_error();
+                let mut stderr = std::io::stderr().lock();
+                let command_name = command.get_name().to_owned();
+                let _ = writeln!(stderr);
+                let _ = writeln!(stderr, "Help page for `{command_name}`:");
+                let _ = command.write_help(&mut stderr);
+                let _ = writeln!(stderr);
+            }
+            std::process::exit(error.exit_code());
         }
     }
+}
 
-    Ok(())
+fn help_command_for_error() -> clap::Command {
+    let mut command = Cli::command();
+    let args = std::env::args().collect::<Vec<_>>();
+    let Some(subcommand_name) = args.get(1) else {
+        return command;
+    };
+
+    if let Some(subcommand) = command
+        .get_subcommands_mut()
+        .find(|subcommand| subcommand.get_name() == subcommand_name)
+    {
+        return subcommand.clone();
+    }
+
+    command
 }
 
 async fn wait_process(selector: ProcessSelector) -> Result<()> {
