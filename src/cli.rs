@@ -47,7 +47,7 @@ pub enum Command {
 
     /// Restart a process from stored command/cwd/env-file metadata.
     #[command(
-        after_help = "Examples:\n  pz restart my-app\n\nNotes:\n  Inline --env values are not stored, so processes using them cannot be restarted exactly."
+        after_help = "Notes:\n  Inline --env values are not stored, so processes using them cannot be restarted exactly."
     )]
     Restart { process: String },
 
