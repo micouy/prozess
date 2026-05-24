@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "pz",
     version,
-    about = "Agent-friendly process manager. Run long-lived commands with `pz run --name <name> -- <command>` so they survive the shell and can be inspected, logged, stopped, and restarted later. Commands use a controlled environment by default; see `pz run --help` for `--inherit-env`."
+    about = "A daemon-backed process manager with persistent logs, explicit environment control, and resource usage tracking."
 )]
 pub struct Cli {
     #[command(subcommand)]
