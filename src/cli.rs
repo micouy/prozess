@@ -29,7 +29,7 @@ pub enum Command {
 
     /// Stop a running process.
     #[command(
-        after_help = "Examples:\n  pz stop my-app\n  pz stop my-app --force\n\nNotes:\n  pz stop signals the tracked process group. Use this instead of pkill -f."
+        after_help = "Notes:\n  pz stop signals the tracked process group. Use this instead of pkill -f."
     )]
     Stop(StopArgs),
 
