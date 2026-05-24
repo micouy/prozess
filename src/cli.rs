@@ -6,8 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "pz",
     version,
-    about = "Local process manager",
-    after_help = "Process ownership:\n  Use pz run --name <name> -- <command> for long-running commands. pz keeps the process, logs, ports, and stop/restart handle after this shell exits. Do not use &, nohup, disown, or pkill -f.\n\nEnvironment:\n  pz uses a controlled environment by default. Use pz run --inherit-env when the command depends on the current shell PATH or environment."
+    about = "Agent-friendly process manager. Run long-lived commands with `pz run --name <name> -- <command>` so they survive the shell and can be inspected, logged, stopped, and restarted later. Commands use a controlled environment by default; see `pz run --help` for `--inherit-env`."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -24,69 +23,61 @@ pub enum Command {
 
     /// Spawn a process through the daemon.
     #[command(
-        after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  Use -- before the command. pz runs the command directly, not through a shell. Use --name for long-running processes so they can be inspected, logged, stopped, and restarted. Use --inherit-env if command lookup depends on the current shell environment.\n\nSee also:\n  pz ps\n  pz logs --help\n  pz stop --help"
+        after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  Use -- before the command. pz runs the command directly, not through a shell. Use --name for long-running processes. Use --inherit-env if command lookup depends on the current shell environment. Do not use &, nohup, disown, or pkill -f."
     )]
     Run(RunArgs),
 
     /// Stop a running process.
     #[command(
-        after_help = "Examples:\n  pz stop my-app\n  pz stop my-app --force\n\nNotes:\n  pz stop signals the tracked process group. Use this instead of pkill -f.\n\nSee also:\n  pz ps\n  pz show --help"
+        after_help = "Examples:\n  pz stop my-app\n  pz stop my-app --force\n\nNotes:\n  pz stop signals the tracked process group. Use this instead of pkill -f."
     )]
     Stop(StopArgs),
 
     /// Add, replace, or clear a process timeout.
     #[command(
-        after_help = "Examples:\n  pz timeout my-app 5m\n  pz timeout my-app clear\n\nNotes:\n  Timeouts are enforced by the daemon even if the client exits. Timed out processes get status timed_out.\n\nSee also:\n  pz show --help"
+        after_help = "Examples:\n  pz timeout my-app 5m\n  pz timeout my-app clear\n\nNotes:\n  Timeouts are enforced by the daemon even if the client exits."
     )]
     Timeout(TimeoutArgs),
 
     /// Wait for a process to finish.
     #[command(
-        after_help = "Examples:\n  pz wait my-app\n\nNotes:\n  Blocks until the process exits and returns the process exit code. The process remains daemon-owned if the waiting client exits.\n\nSee also:\n  pz run --help\n  pz show --help"
+        after_help = "Examples:\n  pz wait my-app\n\nNotes:\n  Blocks until the process exits and returns the process exit code."
     )]
     Wait { process: String },
 
     /// Restart a process from stored command/cwd/env-file metadata.
     #[command(
-        after_help = "Examples:\n  pz restart my-app\n\nNotes:\n  Restarts from stored command, cwd, env files, and timeout metadata. Inline --env values are not stored, so processes using them cannot be restarted exactly.\n\nSee also:\n  pz run --help\n  pz show --help"
+        after_help = "Examples:\n  pz restart my-app\n\nNotes:\n  Inline --env values are not stored, so processes using them cannot be restarted exactly."
     )]
     Restart { process: String },
 
     /// Show current CPU and memory usage for a running process group.
-    #[command(
-        after_help = "Examples:\n  pz resources my-app\n\nNotes:\n  Shows current CPU and memory for the tracked process group. Only running, supervised processes have live resources.\n\nSee also:\n  pz ps\n  pz ports --help"
-    )]
+    #[command(after_help = "Examples:\n  pz resources my-app")]
     Resources { process: String },
 
     /// Show listening TCP ports owned by a running process group.
     #[command(
-        after_help = "Examples:\n  pz ports my-app\n\nNotes:\n  Shows listening TCP ports owned by the tracked process group. If port discovery is unavailable, pz reports that instead of failing process listing.\n\nSee also:\n  pz ps\n  pz resources --help"
+        after_help = "Examples:\n  pz ports my-app\n\nNotes:\n  If port discovery is unavailable, pz reports that instead of failing process listing."
     )]
     Ports { process: String },
 
     /// List tracked processes.
-    #[command(
-        after_help = "Examples:\n  pz ps\n\nNotes:\n  Lists tracked processes with names, ids, status, ports, exit codes, and commands. Use this to find the name or id for logs, show, stop, restart, resources, and ports.\n\nSee also:\n  pz show --help\n  pz logs --help"
-    )]
+    #[command(after_help = "Examples:\n  pz ps")]
     Ps,
 
     /// Show details for one process.
-    #[command(
-        after_help = "Examples:\n  pz show my-app\n  pz show 12\n\nNotes:\n  Shows stored metadata for one process: status, command, cwd, env sources, pid, pgid, and timeout.\n\nSee also:\n  pz logs --help\n  pz resources --help\n  pz ports --help"
-    )]
+    #[command(after_help = "Examples:\n  pz show my-app\n  pz show 12")]
     Show { process: String },
 
     /// Print captured process output.
     #[command(
-        after_help = "Examples:\n  pz logs my-app\n  pz logs my-app stdout\n  pz logs my-app --tail 100\n  pz logs my-app --since 10m\n  pz logs my-app -f\n\nNotes:\n  Logs are captured by pz after the process starts. -f blocks until the process exits.\n\nSee also:\n  pz ps\n  pz show --help"
+        after_help = "Examples:\n  pz logs my-app\n  pz logs my-app stdout\n  pz logs my-app --tail 100\n  pz logs my-app --since 10m\n  pz logs my-app -f\n\nNotes:\n  -f blocks until the process exits."
     )]
     Logs(LogsArgs),
 }
 
 #[derive(Debug, Subcommand)]
-#[command(
-    after_help = "Examples:\n  pz daemon start\n  pz daemon status\n  pz daemon stop\n\nNotes:\n  The daemon owns process supervision, logs, timeouts, and SQLite state. Most users should use pz run, pz ps, pz logs, and pz stop.\n\nSee also:\n  pz run --help\n  pz ps"
-)]
+#[command(after_help = "Examples:\n  pz daemon start\n  pz daemon status\n  pz daemon stop")]
 pub enum DaemonCommand {
     /// Start the local daemon in the background.
     Start,
