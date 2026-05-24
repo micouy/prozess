@@ -184,8 +184,8 @@ fn wrong_subcommand_arg_prints_subcommand_help() -> Result<()> {
         "{stderr}"
     );
     assert!(stderr.contains("Usage: logs"), "{stderr}");
-    assert!(stderr.contains("Examples:"), "{stderr}");
-    assert!(stderr.contains("pz logs my-app --tail 100"), "{stderr}");
+    assert!(stderr.contains("--tail <TAIL>"), "{stderr}");
+    assert!(stderr.contains("Blocks until the process exits"), "{stderr}");
 
     Ok(())
 }

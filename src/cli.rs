@@ -23,7 +23,7 @@ pub enum Command {
 
     /// Spawn a process through the daemon.
     #[command(
-        after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  Use -- before the command. pz runs the command directly, not through a shell. Use --name for long-running processes. Use --inherit-env if command lookup depends on the current shell environment. Do not use &, nohup, disown, or pkill -f."
+        after_help = "Examples:\n  pz run --name my-app -- npm run dev\n  pz run --name web --cwd /path/to/project -- python3 -m http.server 8000\n  pz run --name test --timeout 5m -- cargo test\n\nNotes:\n  pz runs the command directly, not through a shell. Use --name for long-running processes. Do not use &, nohup, disown, or pkill -f."
     )]
     Run(RunArgs),
 
@@ -35,13 +35,13 @@ pub enum Command {
 
     /// Add, replace, or clear a process timeout.
     #[command(
-        after_help = "Examples:\n  pz timeout my-app 5m\n  pz timeout my-app clear\n\nNotes:\n  Timeouts are enforced by the daemon even if the client exits."
+        after_help = "Examples:\n  pz timeout my-app 5m\n  pz timeout my-app clear\n\nNotes:\n  Timeouts are enforced by the daemon."
     )]
     Timeout(TimeoutArgs),
 
     /// Wait for a process to finish.
     #[command(
-        after_help = "Examples:\n  pz wait my-app\n\nNotes:\n  Blocks until the process exits and returns the process exit code."
+        after_help = "Notes:\n  Blocks until the process exits and returns the process exit code."
     )]
     Wait { process: String },
 
@@ -52,32 +52,22 @@ pub enum Command {
     Restart { process: String },
 
     /// Show current CPU and memory usage for a running process group.
-    #[command(after_help = "Examples:\n  pz resources my-app")]
     Resources { process: String },
 
     /// Show listening TCP ports owned by a running process group.
-    #[command(
-        after_help = "Examples:\n  pz ports my-app\n\nNotes:\n  If port discovery is unavailable, pz reports that instead of failing process listing."
-    )]
     Ports { process: String },
 
     /// List tracked processes.
-    #[command(after_help = "Examples:\n  pz ps")]
     Ps,
 
     /// Show details for one process.
-    #[command(after_help = "Examples:\n  pz show my-app\n  pz show 12")]
     Show { process: String },
 
     /// Print captured process output.
-    #[command(
-        after_help = "Examples:\n  pz logs my-app\n  pz logs my-app stdout\n  pz logs my-app --tail 100\n  pz logs my-app --since 10m\n  pz logs my-app -f\n\nNotes:\n  -f blocks until the process exits."
-    )]
     Logs(LogsArgs),
 }
 
 #[derive(Debug, Subcommand)]
-#[command(after_help = "Examples:\n  pz daemon start\n  pz daemon status\n  pz daemon stop")]
 pub enum DaemonCommand {
     /// Start the local daemon in the background.
     Start,
