@@ -268,7 +268,10 @@ fn wrong_subcommand_arg_prints_subcommand_help() -> Result<()> {
     );
     assert!(stderr.contains("Usage: logs"), "{stderr}");
     assert!(stderr.contains("--tail <TAIL>"), "{stderr}");
-    assert!(stderr.contains("Blocks until the process exits"), "{stderr}");
+    assert!(
+        stderr.contains("Blocks until the process exits"),
+        "{stderr}"
+    );
 
     Ok(())
 }

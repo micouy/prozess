@@ -46,10 +46,10 @@ fn state_dir() -> PathBuf {
         return PathBuf::from(path).join("pz");
     }
 
-    if cfg!(target_os = "macos") {
-        if let Some(home) = home_dir() {
-            return home.join("Library").join("Application Support").join("pz");
-        }
+    if cfg!(target_os = "macos")
+        && let Some(home) = home_dir()
+    {
+        return home.join("Library").join("Application Support").join("pz");
     }
 
     if let Some(home) = home_dir() {
