@@ -34,17 +34,28 @@ pub async fn start() -> Result<()> {
     }
 
     let paths = RuntimePaths::default();
+    // A file, not a pipe: a pipe's read end dies with this process and
+    // would EPIPE the daemon's later stderr writes.
+    let stderr_path = paths.socket.with_file_name("daemon.stderr");
+    create_runtime_dir(&paths.socket)?;
+    let stderr_file = std::fs::File::create(&stderr_path)
+        .with_context(|| format!("failed to create {}", stderr_path.display()))?;
     let mut child = std::process::Command::new(std::env::current_exe()?)
         .args(["daemon", "run"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .context("failed to start pz daemon")?;
 
     for _ in 0..100 {
         if let Some(status) = child.try_wait().context("failed to check daemon startup")? {
-            bail!("pz daemon exited during startup with status {status}");
+            let detail = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+            let detail = detail.trim();
+            if detail.is_empty() {
+                bail!("pz daemon exited during startup with status {status}");
+            }
+            bail!("pz daemon exited during startup with status {status}:\n{detail}");
         }
 
         if let Ok(Response::DaemonStatus {
@@ -106,16 +117,22 @@ pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> R
     Ok(())
 }
 
+// Mode 0700 so the socket is not exposed to other users in a shared
+// tmpdir. Existing directories are left as-is.
+fn create_runtime_dir(socket_path: &Path) -> Result<()> {
+    let Some(parent) = socket_path.parent() else {
+        return Ok(());
+    };
+
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .with_context(|| format!("failed to create runtime directory {}", parent.display()))
+}
+
 async fn prepare_socket(socket_path: &Path) -> Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        // Created with mode 0700 so the socket is not exposed to other
-        // users in a shared tmpdir. Existing directories are left as-is.
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)
-            .with_context(|| format!("failed to create runtime directory {}", parent.display()))?;
-    }
+    create_runtime_dir(socket_path)?;
 
     if tokio::fs::try_exists(socket_path).await? {
         if UnixStream::connect(socket_path).await.is_ok() {

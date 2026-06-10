@@ -8,6 +8,7 @@ invalidates a decision must update this file in the same PR.
 - [Architecture](#architecture)
   - [The daemon owns processes; the CLI is one client](#the-daemon-owns-processes-the-cli-is-one-client)
   - [SQLite is the registry and the log store](#sqlite-is-the-registry-and-the-log-store)
+  - [Schema changes are numbered migrations](#schema-changes-are-numbered-migrations)
   - [IPC is one request, one response per connection](#ipc-is-one-request-one-response-per-connection)
   - [Runtime directory is keyed by uid](#runtime-directory-is-keyed-by-uid)
 - [Process Lifecycle](#process-lifecycle)
@@ -35,6 +36,17 @@ check-then-act sequences in clients.
 Process state and captured output live in one SQLite database (WAL mode).
 State survives daemon restarts: pids, pgids, commands, and logs are all
 recoverable. There is no separate log file scheme; output chunks are rows.
+
+### Schema changes are numbered migrations
+
+Schema evolution uses `rusqlite_migration` (SQLite `user_version`): an
+ordered list of steps, each applied exactly once, in a transaction, on
+store open. Migration 1 is an idempotent baseline that also absorbs
+databases from before versioning (any historical schema subset at
+user_version 0). New schema changes append a numbered step — never edit an
+existing one, and never add ad-hoc schema patches outside the list.
+PRAGMAs are connection setup, not migrations: `foreign_keys` is
+per-connection and `journal_mode` cannot change inside a transaction.
 
 ### IPC is one request, one response per connection
 

@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, params};
+use rusqlite_migration::{M, Migrations};
 
 use crate::protocol::{
     OutputChunk, OutputStream, ProcessDetails, ProcessEnvSummary, ProcessStatus, ProcessSummary,
@@ -32,17 +33,20 @@ impl Store {
             })?;
         }
 
-        let connection = Connection::open(&config.database_path).with_context(|| {
+        let mut connection = Connection::open(&config.database_path).with_context(|| {
             format!("failed to open database {}", config.database_path.display())
         })?;
+        connection
+            .pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))
+            .context("failed to enable WAL")?;
+        configure_connection(&connection)?;
+        migrations()
+            .to_latest(&mut connection)
+            .context("failed to migrate database")?;
 
-        let store = Self {
+        Ok(Self {
             database_path: config.database_path,
-        };
-
-        migrate(&connection)?;
-
-        Ok(store)
+        })
     }
 
     pub fn database_path(&self) -> &Path {
@@ -98,6 +102,7 @@ impl Store {
         let env_keys_json = serde_json::to_string(env_keys).context("failed to encode env keys")?;
         let cwd = cwd.display().to_string();
         let timeout_ms = timeout.map(|timeout| timeout.duration_ms);
+        let timeout_ms_sql = sql_timeout_ms(timeout_ms)?;
         let timeout_at_ms = timeout.map(|timeout| timeout.deadline_ms);
 
         connection
@@ -117,7 +122,7 @@ impl Store {
                     inherit_env,
                     env_files_json,
                     env_keys_json,
-                    timeout_ms,
+                    timeout_ms_sql,
                     timeout_at_ms,
                 ],
             )
@@ -264,7 +269,7 @@ impl Store {
 
     pub fn set_timeout(&self, id: i64, timeout: Option<TimeoutSpec>) -> Result<()> {
         let connection = self.connect()?;
-        let timeout_ms = timeout.map(|timeout| timeout.duration_ms);
+        let timeout_ms = sql_timeout_ms(timeout.map(|timeout| timeout.duration_ms))?;
         let timeout_at_ms = timeout.map(|timeout| timeout.deadline_ms);
 
         connection
@@ -477,8 +482,11 @@ impl Store {
     }
 
     fn connect(&self) -> Result<Connection> {
-        Connection::open(&self.database_path)
-            .with_context(|| format!("failed to open database {}", self.database_path.display()))
+        let connection = Connection::open(&self.database_path)
+            .with_context(|| format!("failed to open database {}", self.database_path.display()))?;
+        configure_connection(&connection)?;
+
+        Ok(connection)
     }
 }
 
@@ -650,7 +658,7 @@ fn process_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         pgid: row.get(4)?,
         exit_code: row.get(5)?,
         error_message: row.get(7)?,
-        timeout_ms: row.get(8)?,
+        timeout_ms: timeout_ms_from_row(row, 8)?,
         timeout_at_ms: row.get(9)?,
         ports_unavailable: false,
         ports: Vec::new(),
@@ -676,7 +684,7 @@ fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         pgid: row.get(4)?,
         exit_code: row.get(5)?,
         error_message: row.get(7)?,
-        timeout_ms: row.get(8)?,
+        timeout_ms: timeout_ms_from_row(row, 8)?,
         timeout_at_ms: row.get(9)?,
         command: serde_json::from_str(&command).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -688,6 +696,20 @@ fn process_details_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Process
         cwd: row.get(10)?,
         env: env_summary_from_row(row, 11)?,
     })
+}
+
+// rusqlite 0.40 dropped u64 To/FromSql; timeouts are stored as i64.
+fn sql_timeout_ms(timeout_ms: Option<u64>) -> Result<Option<i64>> {
+    timeout_ms
+        .map(i64::try_from)
+        .transpose()
+        .context("timeout does not fit in i64")
+}
+
+fn timeout_ms_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<u64>> {
+    let value: Option<i64> = row.get(index)?;
+
+    Ok(value.and_then(|value| u64::try_from(value).ok()))
 }
 
 fn env_summary_from_row(
@@ -716,13 +738,29 @@ fn env_summary_from_row(
     })
 }
 
-fn migrate(connection: &Connection) -> Result<()> {
+// `foreign_keys` is per-connection, so this must run for every connection,
+// not just the one that migrates.
+fn configure_connection(connection: &Connection) -> Result<()> {
     connection
-        .execute_batch(
-            "
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
+        .pragma_update(None, "foreign_keys", "ON")
+        .context("failed to enable foreign keys")
+}
 
+fn migrations() -> Migrations<'static> {
+    Migrations::new(vec![
+        // Baseline. Idempotent (IF NOT EXISTS + guarded column adds)
+        // because databases from before schema versioning sit at
+        // user_version 0 with any historical subset of this schema.
+        M::up_with_hook("", |transaction: &Transaction| {
+            baseline(transaction)?;
+            Ok(())
+        }),
+    ])
+}
+
+fn baseline(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "
             CREATE TABLE IF NOT EXISTS processes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
@@ -752,87 +790,37 @@ fn migrate(connection: &Connection) -> Result<()> {
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             ",
-        )
-        .context("failed to initialize database schema")?;
+    )?;
 
-    if !column_exists(connection, "process_output", "created_at_ms")? {
-        connection
-            .execute(
-                "ALTER TABLE process_output ADD COLUMN created_at_ms INTEGER",
+    let patches = [
+        ("process_output", "created_at_ms", "INTEGER"),
+        ("processes", "name", "TEXT"),
+        ("processes", "error_message", "TEXT"),
+        ("processes", "pgid", "INTEGER"),
+        ("processes", "timeout_ms", "INTEGER"),
+        ("processes", "timeout_at_ms", "INTEGER"),
+        ("processes", "inherit_env", "INTEGER NOT NULL DEFAULT 0"),
+        ("processes", "env_files", "TEXT NOT NULL DEFAULT '[]'"),
+        ("processes", "env_keys", "TEXT NOT NULL DEFAULT '[]'"),
+    ];
+
+    for (table, column, definition) in patches {
+        if !column_exists(connection, table, column)? {
+            connection.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
                 [],
-            )
-            .context("failed to add process_output created_at_ms column")?;
-    }
-
-    if !column_exists(connection, "processes", "name")? {
-        connection
-            .execute("ALTER TABLE processes ADD COLUMN name TEXT", [])
-            .context("failed to add process name column")?;
-    }
-
-    if !column_exists(connection, "processes", "error_message")? {
-        connection
-            .execute("ALTER TABLE processes ADD COLUMN error_message TEXT", [])
-            .context("failed to add process error_message column")?;
-    }
-
-    if !column_exists(connection, "processes", "pgid")? {
-        connection
-            .execute("ALTER TABLE processes ADD COLUMN pgid INTEGER", [])
-            .context("failed to add process pgid column")?;
-    }
-
-    if !column_exists(connection, "processes", "timeout_ms")? {
-        connection
-            .execute("ALTER TABLE processes ADD COLUMN timeout_ms INTEGER", [])
-            .context("failed to add process timeout_ms column")?;
-    }
-
-    if !column_exists(connection, "processes", "timeout_at_ms")? {
-        connection
-            .execute("ALTER TABLE processes ADD COLUMN timeout_at_ms INTEGER", [])
-            .context("failed to add process timeout_at_ms column")?;
-    }
-
-    if !column_exists(connection, "processes", "inherit_env")? {
-        connection
-            .execute(
-                "ALTER TABLE processes ADD COLUMN inherit_env INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .context("failed to add process inherit_env column")?;
-    }
-
-    if !column_exists(connection, "processes", "env_files")? {
-        connection
-            .execute(
-                "ALTER TABLE processes ADD COLUMN env_files TEXT NOT NULL DEFAULT '[]'",
-                [],
-            )
-            .context("failed to add process env_files column")?;
-    }
-
-    if !column_exists(connection, "processes", "env_keys")? {
-        connection
-            .execute(
-                "ALTER TABLE processes ADD COLUMN env_keys TEXT NOT NULL DEFAULT '[]'",
-                [],
-            )
-            .context("failed to add process env_keys column")?;
+            )?;
+        }
     }
 
     Ok(())
 }
 
-fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .context("failed to inspect table schema")?;
+fn column_exists(connection: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
     let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .context("failed to query table schema")?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to read table schema")?;
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok(columns.iter().any(|name| name == column))
 }
@@ -850,6 +838,84 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn migrations_are_valid() {
+        assert!(migrations().validate().is_ok());
+    }
+
+    #[test]
+    fn fresh_database_is_versioned() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("pz.sqlite");
+        Store::open(StoreConfig {
+            database_path: path.clone(),
+        })?;
+
+        let connection = Connection::open(&path)?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(version, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_database_is_patched_and_versioned() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("pz.sqlite");
+
+        // A database from before schema versioning: user_version 0 and an
+        // early schema missing later columns.
+        let connection = Connection::open(&path)?;
+        connection.execute_batch(
+            "
+            CREATE TABLE processes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                status TEXT NOT NULL,
+                pid INTEGER,
+                exit_code INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                finished_at TEXT
+            );
+
+            CREATE TABLE process_output (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                process_id INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
+                stream TEXT NOT NULL CHECK (stream IN ('stdout', 'stderr')),
+                chunk BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            INSERT INTO processes (command, cwd, status, pid)
+            VALUES ('[\"echo\"]', '/tmp', 'running', 42);
+            ",
+        )?;
+        drop(connection);
+
+        let store = Store::open(StoreConfig {
+            database_path: path.clone(),
+        })?;
+
+        // Old data survives and the patched columns are usable.
+        let process = store.get_process(1)?;
+        assert_eq!(process.pid, Some(42));
+        assert_eq!(process.name, None);
+
+        let connection = Connection::open(&path)?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(version, 1);
+        assert!(column_exists(&connection, "processes", "env_keys")?);
+        assert!(column_exists(
+            &connection,
+            "process_output",
+            "created_at_ms"
+        )?);
+
+        Ok(())
+    }
 
     #[test]
     fn open_creates_database_and_schema() -> Result<()> {
