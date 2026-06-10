@@ -110,6 +110,59 @@ fn logs_tail_limits_output_lines() -> Result<()> {
 }
 
 #[test]
+fn logs_exits_quietly_when_consumer_closes_pipe() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    // Produce well over 64 KiB of output so `pz logs` always overflows the
+    // pipe buffer and hits EPIPE once the consumer is gone.
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--", "/usr/bin/seq", "1", "30000"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["wait", "1"])?;
+
+    // Output capture is asynchronous; wait until the full output is stored.
+    for _ in 0..100 {
+        let logs = run_pz(&binary, &runtime_dir, &state_dir, &["logs", "1"])?;
+        if String::from_utf8(logs.stdout)?.ends_with("30000\n") {
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+
+    // Simulate `pz logs | head`: close the read end without consuming.
+    let mut child = Command::new(&binary)
+        .args(["logs", "1"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn pz logs")?;
+    drop(child.stdout.take());
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for pz logs")?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "pz logs should exit 0 on broken pipe: {stderr}"
+    );
+    assert!(stderr.is_empty(), "expected no stderr, got: {stderr}");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn wait_exits_with_process_status() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;
