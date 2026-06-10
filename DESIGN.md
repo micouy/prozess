@@ -14,6 +14,7 @@ invalidates a decision must update this file in the same PR.
 - [Process Lifecycle](#process-lifecycle)
   - [Commands are spawned directly, in their own process group](#commands-are-spawned-directly-in-their-own-process-group)
   - [Empty environment by default; env values are never stored](#empty-environment-by-default-env-values-are-never-stored)
+  - [A name has at most one live generation](#a-name-has-at-most-one-live-generation)
   - [The daemon never kills processes at startup; lost stays lost](#the-daemon-never-kills-processes-at-startup-lost-stays-lost)
   - [Pid liveness checks require an identity token](#pid-liveness-checks-require-an-identity-token)
 - [Logs](#logs)
@@ -82,6 +83,17 @@ Processes start with an empty environment unless the user passes
 and env-file *paths*, never values, so secrets do not land in SQLite.
 Consequence: `restart` refuses processes started with inline `--env`,
 because the values cannot be reproduced.
+
+### A name has at most one live generation
+
+`pz run --name X` errors if a live process already holds the name —
+whether that generation is `running`, or `lost` but still alive (checked
+via the pid identity token). The silent alternative is two real processes
+competing for the same ports with one invisible to `pz ps`; that is harder
+to debug than any error. Enforcement is atomic in the daemon: the name is
+reserved as a row *before* the child is spawned, backed by a partial
+unique index on running names, so a conflict can never leak an untracked
+child. Failed and dead generations do not block the name.
 
 ### The daemon never kills processes at startup; lost stays lost
 

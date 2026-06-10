@@ -66,141 +66,119 @@ impl Store {
         env_files: &[String],
         env_keys: &[String],
     ) -> Result<ProcessSummary> {
-        self.insert_process_with_timeout(
-            name,
-            command,
-            cwd,
-            pid,
-            pgid,
-            None,
-            inherit_env,
-            env_files,
-            env_keys,
-            None,
-        )
+        let id = self.reserve_process(name, command, cwd, inherit_env, env_files, env_keys)?;
+
+        self.activate_process(id, pid, pgid, None)
     }
 
-    // TODO: fold these arguments into a spawn-request struct when run
-    // gains name reservation; not worth a churn-only refactor before that.
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_process_with_timeout(
+    /// Claims the name and creates the row before anything is spawned, so
+    /// a name conflict can never leave an untracked child behind. The row
+    /// is `running` with no pid until `activate_process`.
+    pub fn reserve_process(
         &self,
         name: Option<&str>,
         command: &[String],
         cwd: &Path,
+        inherit_env: bool,
+        env_files: &[String],
+        env_keys: &[String],
+    ) -> Result<i64> {
+        let connection = self.connect()?;
+        let command_json = serde_json::to_string(command).context("failed to encode command")?;
+        let env_files_json =
+            serde_json::to_string(env_files).context("failed to encode env files")?;
+        let env_keys_json = serde_json::to_string(env_keys).context("failed to encode env keys")?;
+        let cwd = cwd.display().to_string();
+
+        let result = connection.execute(
+            "
+            INSERT INTO processes (
+                name, command, cwd, status, inherit_env, env_files, env_keys
+            )
+            VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6)
+            ",
+            params![
+                name,
+                command_json,
+                cwd,
+                inherit_env,
+                env_files_json,
+                env_keys_json,
+            ],
+        );
+
+        match result {
+            Ok(_) => Ok(connection.last_insert_rowid()),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                let name = name.unwrap_or("?");
+                anyhow::bail!("a running process named {name:?} already exists")
+            }
+            Err(error) => Err(error).context("failed to reserve process"),
+        }
+    }
+
+    pub fn activate_process(
+        &self,
+        id: i64,
         pid: u32,
         pgid: u32,
         pid_started_at: Option<i64>,
-        inherit_env: bool,
-        env_files: &[String],
-        env_keys: &[String],
-        timeout: Option<TimeoutSpec>,
     ) -> Result<ProcessSummary> {
         let connection = self.connect()?;
-        ensure_active_name_available(&connection, name)?;
-        let command_json = serde_json::to_string(command).context("failed to encode command")?;
-        let env_files_json =
-            serde_json::to_string(env_files).context("failed to encode env files")?;
-        let env_keys_json = serde_json::to_string(env_keys).context("failed to encode env keys")?;
-        let cwd = cwd.display().to_string();
-        let timeout_ms = timeout.map(|timeout| timeout.duration_ms);
-        let timeout_ms_sql = sql_timeout_ms(timeout_ms)?;
-        let timeout_at_ms = timeout.map(|timeout| timeout.deadline_ms);
 
         connection
             .execute(
                 "
-                INSERT INTO processes (
-                    name, command, cwd, status, pid, pgid, pid_started_at, inherit_env, env_files, env_keys, timeout_ms, timeout_at_ms, started_at
-                )
-                VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
+                UPDATE processes
+                SET pid = ?1, pgid = ?2, pid_started_at = ?3, started_at = CURRENT_TIMESTAMP
+                WHERE id = ?4
                 ",
-                params![
-                    name,
-                    command_json,
-                    cwd,
-                    pid,
-                    pgid,
-                    pid_started_at,
-                    inherit_env,
-                    env_files_json,
-                    env_keys_json,
-                    timeout_ms_sql,
-                    timeout_at_ms,
-                ],
+                params![pid, pgid, pid_started_at, id],
             )
-            .context("failed to insert process")?;
+            .context("failed to activate process")?;
 
-        Ok(ProcessSummary {
-            id: connection.last_insert_rowid(),
-            name: name.map(str::to_owned),
-            status: ProcessStatus::Running,
-            pid: Some(pid),
-            pgid: Some(pgid),
-            exit_code: None,
-            error_message: None,
-            timeout_ms,
-            timeout_at_ms,
-            ports_unavailable: false,
-            ports: Vec::new(),
-            command: command.to_vec(),
-            env: ProcessEnvSummary {
-                inherit_env,
-                env_files: env_files.to_vec(),
-                env_keys: env_keys.to_vec(),
-            },
-        })
+        self.get_process(id)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_failed_process(
-        &self,
-        name: Option<&str>,
-        command: &[String],
-        cwd: &Path,
-        error_message: &str,
-        inherit_env: bool,
-        env_files: &[String],
-        env_keys: &[String],
-    ) -> Result<ProcessSummary> {
+    pub fn mark_spawn_failed(&self, id: i64, error_message: &str) -> Result<()> {
         let connection = self.connect()?;
-        let command_json = serde_json::to_string(command).context("failed to encode command")?;
-        let env_files_json =
-            serde_json::to_string(env_files).context("failed to encode env files")?;
-        let env_keys_json = serde_json::to_string(env_keys).context("failed to encode env keys")?;
-        let cwd = cwd.display().to_string();
 
         connection
             .execute(
                 "
-                INSERT INTO processes (
-                    name, command, cwd, status, error_message, inherit_env, env_files, env_keys, finished_at
-                )
-                VALUES (?1, ?2, ?3, 'failed', ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
+                UPDATE processes
+                SET status = 'failed', error_message = ?1, finished_at = CURRENT_TIMESTAMP
+                WHERE id = ?2
                 ",
-                params![name, command_json, cwd, error_message, inherit_env, env_files_json, env_keys_json],
+                params![error_message, id],
             )
-            .context("failed to insert failed process")?;
+            .context("failed to mark process as failed")?;
 
-        Ok(ProcessSummary {
-            id: connection.last_insert_rowid(),
-            name: name.map(str::to_owned),
-            status: ProcessStatus::Failed,
-            pid: None,
-            pgid: None,
-            exit_code: None,
-            error_message: Some(error_message.to_owned()),
-            timeout_ms: None,
-            timeout_at_ms: None,
-            ports_unavailable: false,
-            ports: Vec::new(),
-            command: command.to_vec(),
-            env: ProcessEnvSummary {
-                inherit_env,
-                env_files: env_files.to_vec(),
-                env_keys: env_keys.to_vec(),
-            },
-        })
+        Ok(())
+    }
+
+    /// `(pid, pid_started_at)` of every lost generation of `name` that
+    /// still has a recorded pid, newest first.
+    pub fn lost_generations(&self, name: &str) -> Result<Vec<(u32, Option<i64>)>> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT pid, pid_started_at FROM processes
+                WHERE name = ?1 AND status = 'lost' AND pid IS NOT NULL
+                ORDER BY id DESC
+                ",
+            )
+            .context("failed to prepare lost generations query")?;
+        let generations = statement
+            .query_map([name], |row| Ok((row.get(0)?, row.get(1)?)))
+            .context("failed to query lost generations")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to decode lost generations")?;
+
+        Ok(generations)
     }
 
     pub fn mark_process_finished(&self, id: i64, exit_code: Option<i32>) -> Result<()> {
@@ -531,26 +509,6 @@ fn parse_status(status: &str) -> ProcessStatus {
     }
 }
 
-fn ensure_active_name_available(connection: &Connection, name: Option<&str>) -> Result<()> {
-    let Some(name) = name else {
-        return Ok(());
-    };
-
-    let existing: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM processes WHERE name = ?1 AND status = 'running'",
-            [name],
-            |row| row.get(0),
-        )
-        .context("failed to check process name")?;
-
-    if existing > 0 {
-        anyhow::bail!("a running process named {name:?} already exists");
-    }
-
-    Ok(())
-}
-
 fn parse_stream(stream: &str) -> OutputStream {
     match stream {
         "stdout" => OutputStream::Stdout,
@@ -777,6 +735,20 @@ fn migrations() -> Migrations<'static> {
             Ok(())
         }),
         M::up("ALTER TABLE processes ADD COLUMN pid_started_at INTEGER;"),
+        // Databases predating the index may hold duplicate running names
+        // (spawn used to check after spawning); keep the newest.
+        M::up(
+            "
+            UPDATE processes SET status = 'lost', finished_at = CURRENT_TIMESTAMP
+            WHERE status = 'running' AND name IS NOT NULL AND id NOT IN (
+                SELECT MAX(id) FROM processes
+                WHERE status = 'running' AND name IS NOT NULL
+                GROUP BY name
+            );
+            CREATE UNIQUE INDEX idx_processes_running_name
+            ON processes(name) WHERE status = 'running';
+            ",
+        ),
     ])
 }
 
@@ -876,7 +848,7 @@ mod tests {
 
         let connection = Connection::open(&path)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
 
         Ok(())
     }
@@ -928,7 +900,7 @@ mod tests {
 
         let connection = Connection::open(&path)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert!(column_exists(&connection, "processes", "env_keys")?);
         assert!(column_exists(&connection, "processes", "pid_started_at")?);
         assert!(column_exists(
@@ -998,23 +970,24 @@ mod tests {
     }
 
     #[test]
-    fn insert_failed_process_metadata() -> Result<()> {
+    fn failed_spawn_keeps_reservation_metadata() -> Result<()> {
         let dir = tempdir()?;
         let store = Store::open(StoreConfig {
             database_path: dir.path().join("pz.sqlite"),
         })?;
         let command = vec!["/missing".to_owned()];
 
-        let process = store.insert_failed_process(
+        let id = store.reserve_process(
             Some("missing"),
             &command,
             dir.path(),
-            "not found",
             true,
             &["/tmp/test.env".to_owned()],
             &["SECRET".to_owned()],
         )?;
-        assert_eq!(process.id, 1);
+        store.mark_spawn_failed(id, "not found")?;
+
+        let process = store.get_process(id)?;
         assert_eq!(process.name, Some("missing".to_owned()));
         assert_eq!(process.status, ProcessStatus::Failed);
         assert_eq!(process.pid, None);
@@ -1024,19 +997,97 @@ mod tests {
         assert!(process.env.inherit_env);
         assert_eq!(process.env.env_files, vec!["/tmp/test.env"]);
         assert_eq!(process.env.env_keys, vec!["SECRET"]);
-
-        // Re-read from the database: the returned summary used to claim a
-        // name that was never stored.
-        let process = store.get_process(process.id)?;
-        assert_eq!(process.status, ProcessStatus::Failed);
-        assert_eq!(process.name, Some("missing".to_owned()));
-        assert_eq!(process.error_message, Some("not found".to_owned()));
         assert_eq!(
             store.resolve_process_id(&crate::protocol::ProcessSelector::Name(
                 "missing".to_owned()
             ))?,
-            process.id
+            id
         );
+
+        // A failed generation does not block the name.
+        let second =
+            store.reserve_process(Some("missing"), &command, dir.path(), false, &[], &[])?;
+        assert_ne!(second, id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn reserve_process_rejects_duplicate_running_names() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let command = vec!["sleep".to_owned()];
+
+        store.reserve_process(Some("api"), &command, dir.path(), false, &[], &[])?;
+        let error = store
+            .reserve_process(Some("api"), &command, dir.path(), false, &[], &[])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("a running process named \"api\" already exists"),
+            "{error}"
+        );
+
+        // Unnamed processes never conflict.
+        store.reserve_process(None, &command, dir.path(), false, &[], &[])?;
+        store.reserve_process(None, &command, dir.path(), false, &[], &[])?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn migration_dedupes_running_names_before_indexing() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("pz.sqlite");
+
+        // A pre-index database where the spawn-then-check bug left two
+        // running rows with the same name.
+        let connection = Connection::open(&path)?;
+        baseline(&connection)?;
+        connection.execute_batch(
+            "
+            INSERT INTO processes (name, command, cwd, status, pid)
+            VALUES ('api', '[\"sleep\"]', '/tmp', 'running', 100);
+            INSERT INTO processes (name, command, cwd, status, pid)
+            VALUES ('api', '[\"sleep\"]', '/tmp', 'running', 200);
+            ",
+        )?;
+        drop(connection);
+
+        let store = Store::open(StoreConfig {
+            database_path: path,
+        })?;
+
+        let older = store.get_process(1)?;
+        let newer = store.get_process(2)?;
+        assert_eq!(older.status, ProcessStatus::Lost);
+        assert_eq!(newer.status, ProcessStatus::Running);
+
+        Ok(())
+    }
+
+    #[test]
+    fn lost_generations_lists_newest_first() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let command = vec!["sleep".to_owned()];
+
+        let first =
+            store.insert_process(Some("api"), &command, dir.path(), 100, 100, false, &[], &[])?;
+        store.mark_running_processes_lost()?;
+        let second =
+            store.insert_process(Some("api"), &command, dir.path(), 200, 200, false, &[], &[])?;
+        store.mark_running_processes_lost()?;
+        let _ = (first, second);
+
+        let generations = store.lost_generations("api")?;
+        assert_eq!(generations, vec![(200, None), (100, None)]);
+        assert!(store.lost_generations("other")?.is_empty());
 
         Ok(())
     }
@@ -1472,18 +1523,8 @@ mod tests {
             database_path: dir.path().join("pz.sqlite"),
         })?;
 
-        let with_token = store.insert_process_with_timeout(
-            None,
-            &["echo".to_owned()],
-            dir.path(),
-            1234,
-            1234,
-            Some(1_700_000_000),
-            false,
-            &[],
-            &[],
-            None,
-        )?;
+        let id = store.reserve_process(None, &["echo".to_owned()], dir.path(), false, &[], &[])?;
+        let with_token = store.activate_process(id, 1234, 1234, Some(1_700_000_000))?;
         assert_eq!(store.pid_identity(with_token.id)?, Some(1_700_000_000));
 
         // Rows recorded without a token read back as None.
