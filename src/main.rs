@@ -519,15 +519,23 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Treats a closed stdout (e.g. `pz logs | head`) as a silent success:
+/// the consumer is done, so exit 0 without an error, SIGPIPE-style.
+fn check_stdout_write(result: std::io::Result<()>, context: &'static str) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(err) => Err(err).context(context),
+    }
+}
+
 fn print_output(chunks: &[OutputChunk]) -> Result<Option<i64>> {
     let mut stdout = std::io::stdout().lock();
     let mut last_id = None;
 
     for chunk in chunks {
-        stdout
-            .write_all(&chunk.data)
-            .context("failed to write output")?;
-        stdout.flush().context("failed to flush output")?;
+        check_stdout_write(stdout.write_all(&chunk.data), "failed to write output")?;
+        check_stdout_write(stdout.flush(), "failed to flush output")?;
         last_id = Some(chunk.id);
     }
 
@@ -552,12 +560,10 @@ fn print_output_with_tail(
     let mut stdout = std::io::stdout().lock();
 
     for line in &lines[start..] {
-        stdout
-            .write_all(line.as_bytes())
-            .context("failed to write output")?;
-        stdout.write_all(b"\n").context("failed to write output")?;
+        check_stdout_write(stdout.write_all(line.as_bytes()), "failed to write output")?;
+        check_stdout_write(stdout.write_all(b"\n"), "failed to write output")?;
     }
-    stdout.flush().context("failed to flush output")?;
+    check_stdout_write(stdout.flush(), "failed to flush output")?;
 
     Ok(last_id)
 }

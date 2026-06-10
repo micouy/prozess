@@ -131,15 +131,62 @@ fn logs_tail_limits_output_lines() -> Result<()> {
         &["run", "--", "/usr/bin/printf", "one\\ntwo\\nthree\\n"],
     )?;
     run_pz(&binary, &runtime_dir, &state_dir, &["wait", "1"])?;
-    let logs = run_pz(
+    wait_for_logs(
         &binary,
         &runtime_dir,
         &state_dir,
         &["logs", "1", "--tail", "2"],
+        |logs| logs == "two\nthree\n",
     )?;
-    assert_eq!(String::from_utf8(logs.stdout)?, "two\nthree\n");
     run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
 
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
+fn logs_exits_quietly_when_consumer_closes_pipe() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    // Produce well over 64 KiB of output so `pz logs` always overflows the
+    // pipe buffer and hits EPIPE once the consumer is gone.
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--", "/usr/bin/seq", "1", "30000"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["wait", "1"])?;
+    wait_for_logs(&binary, &runtime_dir, &state_dir, &["logs", "1"], |logs| {
+        logs.ends_with("30000\n")
+    })?;
+
+    // Simulate `pz logs | head`: close the read end without consuming.
+    let mut child = Command::new(&binary)
+        .args(["logs", "1"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn pz logs")?;
+    drop(child.stdout.take());
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for pz logs")?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "pz logs should exit 0 on broken pipe: {stderr}"
+    );
+    assert!(stderr.is_empty(), "expected no stderr, got: {stderr}");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
     wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
 
     Ok(())
@@ -268,18 +315,13 @@ time.sleep(30)
         ],
     )?;
 
-    for _ in 0..100 {
-        let logs = run_pz(
-            &binary,
-            &runtime_dir,
-            &state_dir,
-            &["logs", "threaded-memory", "stdout"],
-        )?;
-        if String::from_utf8(logs.stdout)?.contains("ready") {
-            break;
-        }
-        sleep(Duration::from_millis(50));
-    }
+    wait_for_logs(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "threaded-memory", "stdout"],
+        |logs| logs.contains("ready"),
+    )?;
 
     let resources = run_pz(
         &binary,
@@ -353,6 +395,33 @@ fn run_pz(
     );
 
     Ok(output)
+}
+
+/// Polls `pz logs` until its stdout satisfies `matches`.
+///
+/// `pz wait` returns on process exit, but output capture is asynchronous,
+/// so logs may reach the store slightly later. Returns the matching output,
+/// or bails with the last observed output after ~5s.
+fn wait_for_logs(
+    binary: &std::path::Path,
+    runtime_dir: &tempfile::TempDir,
+    state_dir: &tempfile::TempDir,
+    args: &[&str],
+    matches: impl Fn(&str) -> bool,
+) -> Result<String> {
+    let mut logs = String::new();
+
+    for _ in 0..100 {
+        let output = run_pz(binary, runtime_dir, state_dir, args)?;
+        logs = String::from_utf8(output.stdout)?;
+        if matches(&logs) {
+            return Ok(logs);
+        }
+
+        sleep(Duration::from_millis(50));
+    }
+
+    bail!("pz {} never matched, last output: {logs:?}", args.join(" "))
 }
 
 fn wait_for_socket_removal(socket: std::path::PathBuf) -> Result<()> {
