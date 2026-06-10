@@ -388,6 +388,15 @@ impl Store {
         Ok(())
     }
 
+    /// Reads chunks after `after_id`, within the optional time window.
+    ///
+    /// When `tail_lines` is set it overrides `after_id`: the read starts at
+    /// the position covering exactly the last N lines within the window
+    /// (the boundary chunk is sliced on a line boundary). `0` reads
+    /// nothing and positions past everything stored so far.
+    ///
+    /// Also returns the cursor to resume from (`after_id` for the next
+    /// poll), meaningful even when no chunks are returned.
     pub fn read_output(
         &self,
         process_id: i64,
@@ -395,8 +404,13 @@ impl Store {
         after_id: Option<i64>,
         since_ms: Option<i64>,
         until_ms: Option<i64>,
-    ) -> Result<Vec<OutputChunk>> {
+        tail_lines: Option<u64>,
+    ) -> Result<(Vec<OutputChunk>, i64)> {
         let connection = self.connect()?;
+        let (start, trim_lines) = match tail_lines {
+            Some(tail) => seek_tail(&connection, process_id, stream, since_ms, until_ms, tail)?,
+            None => (after_id.unwrap_or(0), 0),
+        };
         let (sql, stream_filter) = match stream {
             OutputStream::All => (
                 "
@@ -428,16 +442,10 @@ impl Store {
             .prepare(sql)
             .context("failed to prepare output query")?;
 
-        let chunks = if let Some(stream_filter) = stream_filter {
+        let mut chunks = if let Some(stream_filter) = stream_filter {
             statement
                 .query_map(
-                    params![
-                        process_id,
-                        after_id.unwrap_or(0),
-                        since_ms,
-                        until_ms,
-                        stream_filter
-                    ],
+                    params![process_id, start, since_ms, until_ms, stream_filter],
                     output_chunk_from_row,
                 )
                 .context("failed to read output")?
@@ -445,7 +453,7 @@ impl Store {
         } else {
             statement
                 .query_map(
-                    params![process_id, after_id.unwrap_or(0), since_ms, until_ms],
+                    params![process_id, start, since_ms, until_ms],
                     output_chunk_from_row,
                 )
                 .context("failed to read output")?
@@ -453,77 +461,14 @@ impl Store {
         }
         .context("failed to decode output")?;
 
-        Ok(chunks)
-    }
-
-    /// Returns the `after_id` cursor from which `read_output` covers at
-    /// least the last `tail_lines` lines (chunk-aligned, so possibly more —
-    /// callers trim). `tail_lines: 0` returns a cursor past everything
-    /// stored so far. `None` means "start from the beginning".
-    pub fn tail_cursor(
-        &self,
-        process_id: i64,
-        stream: OutputStream,
-        tail_lines: u64,
-    ) -> Result<Option<i64>> {
-        let connection = self.connect()?;
-        let (sql, stream_filter) = match stream {
-            OutputStream::All => (
-                "
-                SELECT id, chunk
-                FROM process_output
-                WHERE process_id = ?1
-                ORDER BY id DESC
-                ",
-                None,
-            ),
-            OutputStream::Stdout | OutputStream::Stderr => (
-                "
-                SELECT id, chunk
-                FROM process_output
-                WHERE process_id = ?1 AND stream = ?2
-                ORDER BY id DESC
-                ",
-                Some(stream_name(stream)),
-            ),
-        };
-        let mut statement = connection
-            .prepare(sql)
-            .context("failed to prepare tail cursor query")?;
-        let map_row =
-            |row: &rusqlite::Row<'_>| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?));
-        let rows = if let Some(stream_filter) = stream_filter {
-            statement.query_map(params![process_id, stream_filter], map_row)
-        } else {
-            statement.query_map(params![process_id], map_row)
+        if trim_lines > 0
+            && let Some(boundary) = chunks.first_mut()
+        {
+            boundary.data = trim_leading_lines(&boundary.data, trim_lines);
         }
-        .context("failed to query tail cursor")?;
+        let resume_after_id = chunks.last().map(|chunk| chunk.id).unwrap_or(start);
 
-        let mut lines: u64 = 0;
-        let mut newest = true;
-
-        for row in rows {
-            let (id, chunk) = row.context("failed to decode tail cursor row")?;
-
-            if tail_lines == 0 {
-                // Nothing should be replayed; point past the newest chunk.
-                return Ok(Some(id));
-            }
-
-            lines += chunk.iter().filter(|byte| **byte == b'\n').count() as u64;
-            if newest && !chunk.ends_with(b"\n") && !chunk.is_empty() {
-                // A trailing partial line still counts as a line.
-                lines += 1;
-            }
-            newest = false;
-
-            if lines >= tail_lines {
-                return Ok(Some(id - 1));
-            }
-        }
-
-        // Fewer stored lines than requested: read from the beginning.
-        Ok(None)
+        Ok((chunks, resume_after_id))
     }
 
     fn connect(&self) -> Result<Connection> {
@@ -586,6 +531,98 @@ fn stream_name(stream: OutputStream) -> &'static str {
         OutputStream::Stdout => "stdout",
         OutputStream::Stderr => "stderr",
     }
+}
+
+/// Walks back from the newest chunk within the window until `tail_lines`
+/// lines are covered. Returns `(start, trim_lines)`: the `id > start`
+/// position to read from, and how many leading lines of the boundary chunk
+/// exceed the requested count and must be sliced off.
+fn seek_tail(
+    connection: &Connection,
+    process_id: i64,
+    stream: OutputStream,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    tail_lines: u64,
+) -> Result<(i64, u64)> {
+    let (sql, stream_filter) = match stream {
+        OutputStream::All => (
+            "
+            SELECT id, chunk
+            FROM process_output
+            WHERE process_id = ?1
+                AND (?2 IS NULL OR created_at_ms >= ?2)
+                AND (?3 IS NULL OR created_at_ms <= ?3)
+            ORDER BY id DESC
+            ",
+            None,
+        ),
+        OutputStream::Stdout | OutputStream::Stderr => (
+            "
+            SELECT id, chunk
+            FROM process_output
+            WHERE process_id = ?1
+                AND (?2 IS NULL OR created_at_ms >= ?2)
+                AND (?3 IS NULL OR created_at_ms <= ?3)
+                AND stream = ?4
+            ORDER BY id DESC
+            ",
+            Some(stream_name(stream)),
+        ),
+    };
+    let mut statement = connection
+        .prepare(sql)
+        .context("failed to prepare tail seek query")?;
+    let map_row = |row: &rusqlite::Row<'_>| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?));
+    let rows = if let Some(stream_filter) = stream_filter {
+        statement.query_map(
+            params![process_id, since_ms, until_ms, stream_filter],
+            map_row,
+        )
+    } else {
+        statement.query_map(params![process_id, since_ms, until_ms], map_row)
+    }
+    .context("failed to seek output tail")?;
+
+    let mut lines: u64 = 0;
+    let mut newest = true;
+
+    for row in rows {
+        let (id, chunk) = row.context("failed to decode tail seek row")?;
+
+        if tail_lines == 0 {
+            // Nothing should be replayed; position past the newest chunk.
+            return Ok((id, 0));
+        }
+
+        lines += chunk.iter().filter(|byte| **byte == b'\n').count() as u64;
+        if newest && !chunk.ends_with(b"\n") && !chunk.is_empty() {
+            // A trailing partial line still counts as a line.
+            lines += 1;
+        }
+        newest = false;
+
+        if lines >= tail_lines {
+            return Ok((id - 1, lines - tail_lines));
+        }
+    }
+
+    // Fewer stored lines than requested: read from the beginning.
+    Ok((0, 0))
+}
+
+/// Drops the first `lines` lines (newline-terminated prefixes) of `data`.
+fn trim_leading_lines(data: &[u8], lines: u64) -> Vec<u8> {
+    let mut start = 0;
+
+    for _ in 0..lines {
+        match data[start..].iter().position(|byte| *byte == b'\n') {
+            Some(newline) => start += newline + 1,
+            None => return Vec::new(),
+        }
+    }
+
+    data[start..].to_vec()
 }
 
 fn output_chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutputChunk> {
@@ -1106,26 +1143,36 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"out\n")?;
         store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;
 
-        let chunks = store.read_output(process.id, OutputStream::All, None, None, None)?;
+        let (chunks, resume) =
+            store.read_output(process.id, OutputStream::All, None, None, None, None)?;
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].id, 1);
         assert_eq!(chunks[1].id, 2);
         assert_eq!(chunks[0].data, b"out\n");
         assert_eq!(chunks[1].data, b"err\n");
+        assert_eq!(resume, 2);
 
-        let chunks = store.read_output(process.id, OutputStream::Stderr, None, None, None)?;
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::Stderr, None, None, None, None)?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"err\n");
 
-        let chunks = store.read_output(process.id, OutputStream::All, Some(1), None, None)?;
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, Some(1), None, None, None)?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].id, 2);
+
+        // Nothing new: the resume cursor holds its position.
+        let (chunks, resume) =
+            store.read_output(process.id, OutputStream::All, Some(2), None, None, None)?;
+        assert!(chunks.is_empty());
+        assert_eq!(resume, 2);
 
         Ok(())
     }
 
     #[test]
-    fn tail_cursor_seeks_back_by_lines() -> Result<()> {
+    fn read_output_tail_returns_exactly_last_lines() -> Result<()> {
         let dir = tempdir()?;
         let store = Store::open(StoreConfig {
             database_path: dir.path().join("pz.sqlite"),
@@ -1141,46 +1188,66 @@ mod tests {
             &[],
         )?;
 
-        // Empty store: nothing to seek past.
-        assert_eq!(store.tail_cursor(process.id, OutputStream::All, 2)?, None);
-        assert_eq!(store.tail_cursor(process.id, OutputStream::All, 0)?, None);
+        // Empty store: tail reads nothing, cursor starts at the beginning.
+        let (chunks, resume) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(0))?;
+        assert!(chunks.is_empty());
+        assert_eq!(resume, 0);
 
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"one\ntwo\n")?;
         store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"three\n")?;
 
-        // tail 0 points past the newest chunk: replay nothing.
-        let cursor = store.tail_cursor(process.id, OutputStream::All, 0)?;
-        assert_eq!(cursor, Some(3));
-        let chunks = store.read_output(process.id, OutputStream::All, cursor, None, None)?;
+        // tail 0: nothing replayed, cursor past the newest chunk.
+        let (chunks, resume) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(0))?;
         assert!(chunks.is_empty());
+        assert_eq!(resume, 3);
 
         // tail 1 is satisfied by the newest chunk alone.
-        let cursor = store.tail_cursor(process.id, OutputStream::All, 1)?;
-        assert_eq!(cursor, Some(2));
-        let chunks = store.read_output(process.id, OutputStream::All, cursor, None, None)?;
+        let (chunks, resume) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"three\n");
+        assert_eq!(resume, 3);
 
-        // tail 2 needs the middle chunk too.
-        let cursor = store.tail_cursor(process.id, OutputStream::All, 2)?;
-        assert_eq!(cursor, Some(1));
+        // tail 2 crosses into the middle chunk.
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].data, b"err\n");
+        assert_eq!(chunks[1].data, b"three\n");
 
-        // More lines than stored: read from the beginning.
-        assert_eq!(store.tail_cursor(process.id, OutputStream::All, 10)?, None);
+        // tail 3 ends mid-chunk: the boundary chunk is sliced on the line.
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(3))?;
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].data, b"two\n");
+        assert_eq!(chunks[1].data, b"err\n");
+        assert_eq!(chunks[2].data, b"three\n");
 
-        // Stream filter skips other-stream chunks when counting: stdout
-        // needs both stdout chunks (ids 1 and 3), stderr only id 2.
-        let cursor = store.tail_cursor(process.id, OutputStream::Stdout, 2)?;
-        assert_eq!(cursor, Some(0));
-        let cursor = store.tail_cursor(process.id, OutputStream::Stderr, 1)?;
-        assert_eq!(cursor, Some(1));
+        // More lines than stored: everything, untouched.
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(10))?;
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].data, b"one\ntwo\n");
+
+        // Stream filters count only matching chunks.
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::Stdout, None, None, None, Some(2))?;
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].data, b"two\n");
+        assert_eq!(chunks[1].data, b"three\n");
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::Stderr, None, None, None, Some(1))?;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"err\n");
 
         Ok(())
     }
 
     #[test]
-    fn tail_cursor_counts_trailing_partial_line() -> Result<()> {
+    fn read_output_tail_counts_trailing_partial_line() -> Result<()> {
         let dir = tempdir()?;
         let store = Store::open(StoreConfig {
             database_path: dir.path().join("pz.sqlite"),
@@ -1200,15 +1267,56 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"partial")?;
 
         // "partial" has no newline but counts as the last line.
-        assert_eq!(
-            store.tail_cursor(process.id, OutputStream::All, 1)?,
-            Some(1)
-        );
-        assert_eq!(
-            store.tail_cursor(process.id, OutputStream::All, 2)?,
-            Some(0)
-        );
-        assert_eq!(store.tail_cursor(process.id, OutputStream::All, 3)?, None);
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"partial");
+
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].data, b"one\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_output_tail_respects_time_window() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let process = store.insert_process(
+            None,
+            &["echo".to_owned()],
+            dir.path(),
+            1234,
+            1234,
+            false,
+            &[],
+            &[],
+        )?;
+
+        store.insert_output_chunk(process.id, OutputStream::Stdout, b"one\n")?;
+        store.insert_output_chunk(process.id, OutputStream::Stdout, b"two\n")?;
+
+        // until_ms before everything: the window is empty, tail finds nothing.
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, Some(0), Some(1))?;
+        assert!(chunks.is_empty());
+
+        // Window containing both: tail 1 returns only the newest.
+        let now = now_ms()?;
+        let (chunks, _) = store.read_output(
+            process.id,
+            OutputStream::All,
+            None,
+            Some(0),
+            Some(now + 1000),
+            Some(1),
+        )?;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"two\n");
 
         Ok(())
     }

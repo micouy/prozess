@@ -100,28 +100,17 @@ async fn main() -> Result<()> {
             if args.follow {
                 follow_logs(selector, stream, args.tail, since_ms).await
             } else {
-                let until_ms = cutoff_ms(args.until.as_deref())?;
-                let client = Client::new();
-                // A time window changes what "last N lines" means
-                // (window-then-tail); only seed the cursor without one.
-                let after_id = match args.tail {
-                    Some(tail) if since_ms.is_none() && until_ms.is_none() => {
-                        log_cursor(&client, &selector, stream, tail as u64).await?
-                    }
-                    _ => None,
-                };
-
                 print_logs_response(
-                    client
+                    Client::new()
                         .send(Request::ReadLogs {
                             selector,
                             stream,
-                            after_id,
+                            after_id: None,
                             since_ms,
-                            until_ms,
+                            until_ms: cutoff_ms(args.until.as_deref())?,
+                            tail_lines: args.tail.map(|tail| tail as u64),
                         })
                         .await,
-                    args.tail,
                 )
             }
         }
@@ -316,26 +305,6 @@ fn parse_env_var(value: &str) -> Result<EnvVar> {
     })
 }
 
-async fn log_cursor(
-    client: &Client,
-    selector: &ProcessSelector,
-    stream: OutputStream,
-    tail_lines: u64,
-) -> Result<Option<i64>> {
-    match client
-        .send(Request::LogCursor {
-            selector: selector.clone(),
-            stream,
-            tail_lines,
-        })
-        .await?
-    {
-        Response::LogCursor { after_id } => Ok(after_id),
-        Response::Error { message } => bail!(message),
-        _ => bail!("daemon returned an unexpected logs response"),
-    }
-}
-
 async fn follow_logs(
     selector: ProcessSelector,
     stream: OutputStream,
@@ -343,32 +312,34 @@ async fn follow_logs(
     since_ms: Option<i64>,
 ) -> Result<()> {
     let client = Client::new();
-    let mut after_id = match tail_lines {
-        Some(tail) => log_cursor(&client, &selector, stream, tail as u64).await?,
-        None => None,
-    };
-    // The cursor is chunk-aligned, so the first batch may hold more than
-    // the requested lines; trim it once, then print everything as-is.
-    let mut trim_first_batch = tail_lines;
+    let mut after_id = None;
+    // Positions the first read; every later read resumes from the cursor
+    // the daemon returns.
+    let mut tail_lines = tail_lines.map(|tail| tail as u64);
     let mut quiet_polls_after_exit = 0;
 
     loop {
-        let chunks = match client
+        let (chunks, resume_after_id) = match client
             .send(Request::ReadLogs {
                 selector: selector.clone(),
                 stream,
                 after_id,
                 since_ms,
                 until_ms: None,
+                tail_lines: tail_lines.take(),
             })
             .await?
         {
-            Response::Output(chunks) => chunks,
+            Response::Output {
+                chunks,
+                resume_after_id,
+            } => (chunks, resume_after_id),
             Response::Error { message } => bail!(message),
             _ => bail!("daemon returned an unexpected logs response"),
         };
         let printed_any = !chunks.is_empty();
-        after_id = print_output_with_tail(&chunks, trim_first_batch.take())?.or(after_id);
+        print_output(&chunks)?;
+        after_id = Some(resume_after_id);
 
         let is_running = match client
             .send(Request::ShowProcess {
@@ -438,20 +409,19 @@ fn print_response(response: Result<Response>) -> Result<()> {
         Response::ProcessDetails(process) => print_process_details(&process),
         Response::ResourceSnapshot(snapshot) => print_resource_snapshot(&snapshot),
         Response::PortList(ports) => print_ports(&ports),
-        Response::Output(chunks) => {
+        Response::Output { chunks, .. } => {
             print_output(&chunks)?;
         }
-        Response::LogCursor { .. } => bail!("daemon returned an unexpected cursor response"),
         Response::Error { message } => bail!(message),
     }
 
     Ok(())
 }
 
-fn print_logs_response(response: Result<Response>, tail_lines: Option<usize>) -> Result<()> {
+fn print_logs_response(response: Result<Response>) -> Result<()> {
     match response? {
-        Response::Output(chunks) => {
-            print_output_with_tail(&chunks, tail_lines)?;
+        Response::Output { chunks, .. } => {
+            print_output(&chunks)?;
         }
         Response::Error { message } => bail!(message),
         _ => bail!("daemon returned an unexpected logs response"),
@@ -576,43 +546,15 @@ fn check_stdout_write(result: std::io::Result<()>, context: &'static str) -> Res
     }
 }
 
-fn print_output(chunks: &[OutputChunk]) -> Result<Option<i64>> {
+fn print_output(chunks: &[OutputChunk]) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
-    let mut last_id = None;
 
     for chunk in chunks {
         check_stdout_write(stdout.write_all(&chunk.data), "failed to write output")?;
         check_stdout_write(stdout.flush(), "failed to flush output")?;
-        last_id = Some(chunk.id);
     }
 
-    Ok(last_id)
-}
-
-fn print_output_with_tail(
-    chunks: &[OutputChunk],
-    tail_lines: Option<usize>,
-) -> Result<Option<i64>> {
-    let Some(tail_lines) = tail_lines else {
-        return print_output(chunks);
-    };
-    let last_id = chunks.last().map(|chunk| chunk.id);
-    let data = chunks
-        .iter()
-        .flat_map(|chunk| chunk.data.iter().copied())
-        .collect::<Vec<_>>();
-    let text = String::from_utf8_lossy(&data);
-    let lines = text.lines().collect::<Vec<_>>();
-    let start = lines.len().saturating_sub(tail_lines);
-    let mut stdout = std::io::stdout().lock();
-
-    for line in &lines[start..] {
-        check_stdout_write(stdout.write_all(line.as_bytes()), "failed to write output")?;
-        check_stdout_write(stdout.write_all(b"\n"), "failed to write output")?;
-    }
-    check_stdout_write(stdout.flush(), "failed to flush output")?;
-
-    Ok(last_id)
+    Ok(())
 }
 
 fn print_process_details(process: &crate::protocol::ProcessDetails) {

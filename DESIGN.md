@@ -90,14 +90,18 @@ expressed as queries against this cursor rather than new storage.
 
 ### Tail and follow are daemon-side queries
 
-"Last N lines" and "start following from now" are answered by the daemon
-(walking back from the newest chunk), not by fetching full history and
-slicing client-side. Flags compose: `-f --tail N` replays the last N lines
-then follows; `-f --tail 0` follows from now without replaying. Flags that
-are accepted must work in every mode — silently ignoring a parsed flag is a
-bug; combinations that cannot work (`-f --until`) are rejected. When a time
-window (`--since`/`--until`) is set without `-f`, tailing stays client-side
-because the window changes what "last N lines" means (window-then-tail).
+"Last N lines" and "start following from now" are answered entirely by the
+daemon, not by fetching history and slicing client-side: one read request
+takes an optional `tail_lines` and returns exactly the requested lines
+(time window applied first, boundary chunk sliced on a line) plus the
+cursor to resume from — meaningful even when no data is returned, so
+followers never infer positions. There is deliberately no separate
+"seek" request: every caller of a position query immediately reads from
+it, so position-finding lives inside the read. Flags compose: `-f --tail
+N` replays the last N lines then follows; `-f --tail 0` follows from now.
+Flags that are accepted must work in every mode — silently ignoring a
+parsed flag is a bug; combinations that cannot work (`-f --until`) are
+rejected.
 
 ## CLI Behavior
 

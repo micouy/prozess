@@ -39,14 +39,11 @@ pub enum Request {
         after_id: Option<i64>,
         since_ms: Option<i64>,
         until_ms: Option<i64>,
-    },
-    /// Returns the `after_id` cursor from which reading covers (at least)
-    /// the last `tail_lines` lines. `tail_lines: 0` points past everything
-    /// stored so far, i.e. "follow from now".
-    LogCursor {
-        selector: ProcessSelector,
-        stream: OutputStream,
-        tail_lines: u64,
+        /// When set, start reading at the position that covers exactly the
+        /// last N lines (within the time window, if one is given), instead
+        /// of at `after_id`. `0` means "past everything stored so far",
+        /// i.e. follow from now.
+        tail_lines: Option<u64>,
     },
 }
 
@@ -95,7 +92,6 @@ impl Request {
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",
-            Self::LogCursor { .. } => "logs",
         }
     }
 }
@@ -122,9 +118,11 @@ pub enum Response {
     ProcessDetails(ProcessDetails),
     ResourceSnapshot(ResourceSnapshot),
     PortList(PortList),
-    Output(Vec<OutputChunk>),
-    LogCursor {
-        after_id: Option<i64>,
+    Output {
+        chunks: Vec<OutputChunk>,
+        /// Pass as `after_id` in the next poll to resume exactly where
+        /// this read ended — meaningful even when `chunks` is empty.
+        resume_after_id: i64,
     },
     Error {
         message: String,

@@ -72,24 +72,22 @@ impl Service {
                 after_id,
                 since_ms,
                 until_ms,
-            } => Response::Output(self.store.read_output(
-                self.store.resolve_process_id(&selector)?,
-                stream,
-                after_id,
-                since_ms,
-                until_ms,
-            )?),
-            Request::LogCursor {
-                selector,
-                stream,
                 tail_lines,
-            } => Response::LogCursor {
-                after_id: self.store.tail_cursor(
+            } => {
+                let (chunks, resume_after_id) = self.store.read_output(
                     self.store.resolve_process_id(&selector)?,
                     stream,
+                    after_id,
+                    since_ms,
+                    until_ms,
                     tail_lines,
-                )?,
-            },
+                )?;
+
+                Response::Output {
+                    chunks,
+                    resume_after_id,
+                }
+            }
         };
 
         Ok(response)

@@ -320,9 +320,10 @@ mod tests {
                 after_id: None,
                 since_ms: None,
                 until_ms: None,
+                tail_lines: None,
             })
             .await?;
-        let Response::Output(chunks) = response else {
+        let Response::Output { chunks, .. } = response else {
             bail!("expected output response");
         };
         let output = chunks
@@ -916,9 +917,10 @@ mod tests {
                 after_id: None,
                 since_ms: None,
                 until_ms: None,
+                tail_lines: None,
             })
             .await?;
-        let Response::Output(chunks) = response else {
+        let Response::Output { chunks, .. } = response else {
             bail!("expected output response");
         };
         assert_eq!(chunks.len(), 1);
@@ -987,8 +989,8 @@ mod tests {
         })?;
 
         for _ in 0..100 {
-            let output = store
-                .read_output(id, stream, None, None, None)?
+            let (chunks, _) = store.read_output(id, stream, None, None, None, None)?;
+            let output = chunks
                 .into_iter()
                 .flat_map(|chunk| chunk.data)
                 .collect::<Vec<_>>();
@@ -1012,8 +1014,8 @@ mod tests {
         })?;
 
         for _ in 0..100 {
-            let output = store
-                .read_output(id, stream, None, None, None)?
+            let (chunks, _) = store.read_output(id, stream, None, None, None, None)?;
+            let output = chunks
                 .into_iter()
                 .flat_map(|chunk| chunk.data)
                 .collect::<Vec<_>>();
