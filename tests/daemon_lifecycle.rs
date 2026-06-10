@@ -96,6 +96,28 @@ fn daemon_creates_private_runtime_dir() -> Result<()> {
 }
 
 #[test]
+fn daemon_start_reports_startup_failure_cause() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    std::fs::write(state_dir.path().join("pz.sqlite"), b"not a database")?;
+
+    let start = Command::new(&binary)
+        .args(["daemon", "start"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .output()
+        .context("failed to run daemon start")?;
+
+    assert!(!start.status.success());
+    let stderr = String::from_utf8(start.stderr)?;
+    assert!(stderr.contains("file is not a database"), "{stderr}");
+
+    Ok(())
+}
+
+#[test]
 fn logs_follow_prints_output_and_exits() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;
