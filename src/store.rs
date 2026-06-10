@@ -401,6 +401,11 @@ impl Store {
         tail_lines: Option<u64>,
     ) -> Result<(Vec<OutputChunk>, i64)> {
         let connection = self.connect()?;
+        // One snapshot for both the seek and the read, so chunks landing
+        // in between cannot widen "the last N lines".
+        let connection = connection
+            .unchecked_transaction()
+            .context("failed to begin read transaction")?;
         let (start, trim_lines) = match tail_lines {
             Some(tail) => seek_tail(&connection, process_id, stream, since_ms, until_ms, tail)?,
             None => (after_id.unwrap_or(0), 0),
@@ -455,10 +460,11 @@ impl Store {
         }
         .context("failed to decode output")?;
 
-        if trim_lines > 0
-            && let Some(boundary) = chunks.first_mut()
-        {
-            boundary.data = trim_leading_lines(&boundary.data, trim_lines);
+        if trim_lines > 0 && !chunks.is_empty() {
+            chunks[0].data = trim_leading_lines(&chunks[0].data, trim_lines);
+            if chunks[0].data.is_empty() {
+                chunks.remove(0);
+            }
         }
         let resume_after_id = chunks.last().map(|chunk| chunk.id).unwrap_or(start);
 
@@ -594,7 +600,11 @@ fn seek_tail(
         }
         newest = false;
 
-        if lines >= tail_lines {
+        // Strictly greater: a cut at `lines == tail_lines` would land on
+        // this chunk's start, which may be the middle of a line continued
+        // from an older chunk. Overshooting by one line keeps the cut just
+        // after a newline.
+        if lines > tail_lines {
             return Ok((id - 1, lines - tail_lines));
         }
     }
@@ -1263,6 +1273,51 @@ mod tests {
             store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].data, b"one\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_output_tail_keeps_lines_spanning_chunks_whole() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+        let process = store.insert_process(
+            None,
+            &["echo".to_owned()],
+            dir.path(),
+            1234,
+            1234,
+            false,
+            &[],
+            &[],
+        )?;
+
+        // "aaabbb" is one line captured as two chunks.
+        store.insert_output_chunk(process.id, OutputStream::Stdout, b"aaa")?;
+        store.insert_output_chunk(process.id, OutputStream::Stdout, b"bbb\nccc\n")?;
+
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
+        let data = chunks
+            .iter()
+            .flat_map(|chunk| chunk.data.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(data, b"aaabbb\nccc\n");
+
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"ccc\n");
+
+        // A line-aligned cut between chunks must not leave an empty
+        // boundary chunk behind.
+        store.insert_output_chunk(process.id, OutputStream::Stdout, b"ddd\n")?;
+        let (chunks, _) =
+            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"ddd\n");
 
         Ok(())
     }
