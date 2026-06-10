@@ -40,6 +40,14 @@ pub enum Request {
         since_ms: Option<i64>,
         until_ms: Option<i64>,
     },
+    /// Returns the `after_id` cursor from which reading covers (at least)
+    /// the last `tail_lines` lines. `tail_lines: 0` points past everything
+    /// stored so far, i.e. "follow from now".
+    LogCursor {
+        selector: ProcessSelector,
+        stream: OutputStream,
+        tail_lines: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +95,7 @@ impl Request {
             Self::ListProcesses => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",
+            Self::LogCursor { .. } => "logs",
         }
     }
 }
@@ -114,6 +123,9 @@ pub enum Response {
     ResourceSnapshot(ResourceSnapshot),
     PortList(PortList),
     Output(Vec<OutputChunk>),
+    LogCursor {
+        after_id: Option<i64>,
+    },
     Error {
         message: String,
     },

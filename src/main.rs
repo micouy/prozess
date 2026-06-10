@@ -93,17 +93,32 @@ async fn main() -> Result<()> {
                 .await,
         ),
         Command::Logs(args) => {
+            let selector = process_selector(&args.process);
+            let stream = args.channel.into();
+            let since_ms = cutoff_ms(args.since.as_deref())?;
+
             if args.follow {
-                follow_logs(process_selector(&args.process), args.channel.into()).await
+                follow_logs(selector, stream, args.tail, since_ms).await
             } else {
+                let until_ms = cutoff_ms(args.until.as_deref())?;
+                let client = Client::new();
+                // A time window changes what "last N lines" means
+                // (window-then-tail); only seed the cursor without one.
+                let after_id = match args.tail {
+                    Some(tail) if since_ms.is_none() && until_ms.is_none() => {
+                        log_cursor(&client, &selector, stream, tail as u64).await?
+                    }
+                    _ => None,
+                };
+
                 print_logs_response(
-                    Client::new()
+                    client
                         .send(Request::ReadLogs {
-                            selector: process_selector(&args.process),
-                            stream: args.channel.into(),
-                            after_id: None,
-                            since_ms: cutoff_ms(args.since.as_deref())?,
-                            until_ms: cutoff_ms(args.until.as_deref())?,
+                            selector,
+                            stream,
+                            after_id,
+                            since_ms,
+                            until_ms,
                         })
                         .await,
                     args.tail,
@@ -301,9 +316,40 @@ fn parse_env_var(value: &str) -> Result<EnvVar> {
     })
 }
 
-async fn follow_logs(selector: ProcessSelector, stream: OutputStream) -> Result<()> {
+async fn log_cursor(
+    client: &Client,
+    selector: &ProcessSelector,
+    stream: OutputStream,
+    tail_lines: u64,
+) -> Result<Option<i64>> {
+    match client
+        .send(Request::LogCursor {
+            selector: selector.clone(),
+            stream,
+            tail_lines,
+        })
+        .await?
+    {
+        Response::LogCursor { after_id } => Ok(after_id),
+        Response::Error { message } => bail!(message),
+        _ => bail!("daemon returned an unexpected logs response"),
+    }
+}
+
+async fn follow_logs(
+    selector: ProcessSelector,
+    stream: OutputStream,
+    tail_lines: Option<usize>,
+    since_ms: Option<i64>,
+) -> Result<()> {
     let client = Client::new();
-    let mut after_id = None;
+    let mut after_id = match tail_lines {
+        Some(tail) => log_cursor(&client, &selector, stream, tail as u64).await?,
+        None => None,
+    };
+    // The cursor is chunk-aligned, so the first batch may hold more than
+    // the requested lines; trim it once, then print everything as-is.
+    let mut trim_first_batch = tail_lines;
     let mut quiet_polls_after_exit = 0;
 
     loop {
@@ -312,7 +358,7 @@ async fn follow_logs(selector: ProcessSelector, stream: OutputStream) -> Result<
                 selector: selector.clone(),
                 stream,
                 after_id,
-                since_ms: None,
+                since_ms,
                 until_ms: None,
             })
             .await?
@@ -322,7 +368,7 @@ async fn follow_logs(selector: ProcessSelector, stream: OutputStream) -> Result<
             _ => bail!("daemon returned an unexpected logs response"),
         };
         let printed_any = !chunks.is_empty();
-        after_id = print_output(&chunks)?.or(after_id);
+        after_id = print_output_with_tail(&chunks, trim_first_batch.take())?.or(after_id);
 
         let is_running = match client
             .send(Request::ShowProcess {
@@ -395,6 +441,7 @@ fn print_response(response: Result<Response>) -> Result<()> {
         Response::Output(chunks) => {
             print_output(&chunks)?;
         }
+        Response::LogCursor { .. } => bail!("daemon returned an unexpected cursor response"),
         Response::Error { message } => bail!(message),
     }
 

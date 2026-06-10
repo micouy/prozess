@@ -79,6 +79,17 @@ impl Service {
                 since_ms,
                 until_ms,
             )?),
+            Request::LogCursor {
+                selector,
+                stream,
+                tail_lines,
+            } => Response::LogCursor {
+                after_id: self.store.tail_cursor(
+                    self.store.resolve_process_id(&selector)?,
+                    stream,
+                    tail_lines,
+                )?,
+            },
         };
 
         Ok(response)

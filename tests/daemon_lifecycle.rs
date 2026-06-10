@@ -118,6 +118,59 @@ fn logs_follow_prints_output_and_exits() -> Result<()> {
 }
 
 #[test]
+fn logs_follow_tail_replays_only_requested_lines() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--", "/usr/bin/printf", "one\\ntwo\\nthree\\n"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["wait", "1"])?;
+    wait_for_logs(&binary, &runtime_dir, &state_dir, &["logs", "1"], |logs| {
+        logs == "one\ntwo\nthree\n"
+    })?;
+
+    // -f --tail 2 replays the last two lines, then exits (process is done).
+    let logs = run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "1", "-f", "--tail", "2"],
+    )?;
+    assert_eq!(String::from_utf8(logs.stdout)?, "two\nthree\n");
+
+    // -f --tail 0 replays nothing.
+    let logs = run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "1", "-f", "--tail", "0"],
+    )?;
+    assert_eq!(String::from_utf8(logs.stdout)?, "");
+
+    // --until cannot be combined with --follow.
+    let output = Command::new(&binary)
+        .args(["logs", "1", "-f", "--until", "10s"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .output()
+        .context("failed to run pz logs")?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn logs_tail_limits_output_lines() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;
