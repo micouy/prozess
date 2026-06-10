@@ -95,13 +95,24 @@ fn logs_tail_limits_output_lines() -> Result<()> {
         &["run", "--", "/usr/bin/printf", "one\\ntwo\\nthree\\n"],
     )?;
     run_pz(&binary, &runtime_dir, &state_dir, &["wait", "1"])?;
-    let logs = run_pz(
-        &binary,
-        &runtime_dir,
-        &state_dir,
-        &["logs", "1", "--tail", "2"],
-    )?;
-    assert_eq!(String::from_utf8(logs.stdout)?, "two\nthree\n");
+
+    // `wait` returns on process exit, but output capture is asynchronous;
+    // poll until the chunks reach the store.
+    let mut logs = String::new();
+    for _ in 0..100 {
+        let output = run_pz(
+            &binary,
+            &runtime_dir,
+            &state_dir,
+            &["logs", "1", "--tail", "2"],
+        )?;
+        logs = String::from_utf8(output.stdout)?;
+        if logs == "two\nthree\n" {
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    assert_eq!(logs, "two\nthree\n");
     run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
 
     wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
