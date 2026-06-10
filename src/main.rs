@@ -685,11 +685,11 @@ impl std::fmt::Display for crate::protocol::ProcessStatus {
 }
 
 fn format_duration_ms(timeout_ms: u64) -> String {
-    if timeout_ms % 3_600_000 == 0 {
+    if timeout_ms.is_multiple_of(3_600_000) {
         format!("{}h", timeout_ms / 3_600_000)
-    } else if timeout_ms % 60_000 == 0 {
+    } else if timeout_ms.is_multiple_of(60_000) {
         format!("{}m", timeout_ms / 60_000)
-    } else if timeout_ms % 1_000 == 0 {
+    } else if timeout_ms.is_multiple_of(1_000) {
         format!("{}s", timeout_ms / 1_000)
     } else {
         format!("{timeout_ms}ms")

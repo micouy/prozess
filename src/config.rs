@@ -123,10 +123,10 @@ fn expand_config_home(path: &str) -> PathBuf {
     // For config files only, support the common user-facing shorthand where a
     // leading "~/" means "$HOME/". CLI paths do not need this because shells
     // normally expand ~ before invoking pz.
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = home_dir()
+    {
+        return home.join(rest);
     }
 
     PathBuf::from(path)

@@ -50,6 +50,7 @@ impl Store {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_process(
         &self,
         name: Option<&str>,
@@ -74,6 +75,9 @@ impl Store {
         )
     }
 
+    // TODO: fold these arguments into a spawn-request struct when run
+    // gains name reservation; not worth a churn-only refactor before that.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_process_with_timeout(
         &self,
         name: Option<&str>,
@@ -140,6 +144,7 @@ impl Store {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_failed_process(
         &self,
         name: Option<&str>,
