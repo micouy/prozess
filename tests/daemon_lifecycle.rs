@@ -60,6 +60,42 @@ fn daemon_start_runs_in_background() -> Result<()> {
 }
 
 #[test]
+fn daemon_creates_private_runtime_dir() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = tempdir()?;
+    let runtime_dir = base.path().join("nested").join("run");
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    let start = Command::new(&binary)
+        .args(["daemon", "start"])
+        .env("PZ_RUNTIME_DIR", &runtime_dir)
+        .env("PZ_STATE_DIR", state_dir.path())
+        .output()
+        .context("failed to run daemon start")?;
+    assert!(
+        start.status.success(),
+        "daemon start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let mode = std::fs::metadata(&runtime_dir)?.permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "runtime dir should be private, got {mode:o}");
+
+    let stop = Command::new(&binary)
+        .args(["daemon", "stop"])
+        .env("PZ_RUNTIME_DIR", &runtime_dir)
+        .env("PZ_STATE_DIR", state_dir.path())
+        .output()
+        .context("failed to run daemon stop")?;
+    assert!(stop.status.success());
+    wait_for_socket_removal(runtime_dir.join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn logs_follow_prints_output_and_exits() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;

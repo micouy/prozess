@@ -1,4 +1,5 @@
 use std::{
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -107,8 +108,12 @@ pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> R
 
 async fn prepare_socket(socket_path: &Path) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
+        // Created with mode 0700 so the socket is not exposed to other
+        // users in a shared tmpdir. Existing directories are left as-is.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
             .with_context(|| format!("failed to create runtime directory {}", parent.display()))?;
     }
 
