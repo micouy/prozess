@@ -15,6 +15,7 @@ invalidates a decision must update this file in the same PR.
   - [Commands are spawned directly, in their own process group](#commands-are-spawned-directly-in-their-own-process-group)
   - [Empty environment by default; env values are never stored](#empty-environment-by-default-env-values-are-never-stored)
   - [The daemon never kills processes at startup; lost stays lost](#the-daemon-never-kills-processes-at-startup-lost-stays-lost)
+  - [Pid liveness checks require an identity token](#pid-liveness-checks-require-an-identity-token)
 - [Logs](#logs)
   - [Logs are ordered by a global cursor](#logs-are-ordered-by-a-global-cursor)
   - [Tail and follow are daemon-side queries](#tail-and-follow-are-daemon-side-queries)
@@ -90,6 +91,16 @@ still alive. Killing user processes because the *daemon* restarted is never
 acceptable. `lost` is a permanent honest status: the daemon cannot
 retroactively guarantee log completeness or exit-code capture for a process
 it stopped watching, so it does not pretend to.
+
+### Pid liveness checks require an identity token
+
+Any decision based on "is pid N still alive" (lost-but-alive name
+conflicts, replace-style reaping, adoption) must guard against pid reuse.
+At spawn time the daemon records the process start time as an identity
+token; later liveness checks compare it. A bare `kill(pid, 0)` is not
+sufficient evidence: acting on a recycled pid can kill an unrelated
+process. Rows recorded before tokens existed degrade to a bare existence
+check.
 
 ## Logs
 

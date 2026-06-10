@@ -72,6 +72,7 @@ impl Store {
             cwd,
             pid,
             pgid,
+            None,
             inherit_env,
             env_files,
             env_keys,
@@ -89,6 +90,7 @@ impl Store {
         cwd: &Path,
         pid: u32,
         pgid: u32,
+        pid_started_at: Option<i64>,
         inherit_env: bool,
         env_files: &[String],
         env_keys: &[String],
@@ -109,9 +111,9 @@ impl Store {
             .execute(
                 "
                 INSERT INTO processes (
-                    name, command, cwd, status, pid, pgid, inherit_env, env_files, env_keys, timeout_ms, timeout_at_ms, started_at
+                    name, command, cwd, status, pid, pgid, pid_started_at, inherit_env, env_files, env_keys, timeout_ms, timeout_at_ms, started_at
                 )
-                VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP)
+                VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
                 ",
                 params![
                     name,
@@ -119,6 +121,7 @@ impl Store {
                     cwd,
                     pid,
                     pgid,
+                    pid_started_at,
                     inherit_env,
                     env_files_json,
                     env_keys_json,
@@ -481,6 +484,24 @@ impl Store {
         Ok((chunks, resume_after_id))
     }
 
+    /// The pid identity token recorded at spawn time, if any. Compare with
+    /// `pid_identity::current_token` before trusting that the stored pid
+    /// still refers to the same process.
+    // TODO: consumed by lost-but-alive name conflicts and `run --replace`;
+    // remove the allow once those land.
+    #[allow(dead_code)]
+    pub fn pid_identity(&self, id: i64) -> Result<Option<i64>> {
+        let connection = self.connect()?;
+
+        connection
+            .query_row(
+                "SELECT pid_started_at FROM processes WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("failed to read pid identity for process {id}"))
+    }
+
     fn connect(&self) -> Result<Connection> {
         let connection = Connection::open(&self.database_path)
             .with_context(|| format!("failed to open database {}", self.database_path.display()))?;
@@ -755,6 +776,7 @@ fn migrations() -> Migrations<'static> {
             baseline(transaction)?;
             Ok(())
         }),
+        M::up("ALTER TABLE processes ADD COLUMN pid_started_at INTEGER;"),
     ])
 }
 
@@ -854,7 +876,7 @@ mod tests {
 
         let connection = Connection::open(&path)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
 
         Ok(())
     }
@@ -906,8 +928,9 @@ mod tests {
 
         let connection = Connection::open(&path)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         assert!(column_exists(&connection, "processes", "env_keys")?);
+        assert!(column_exists(&connection, "processes", "pid_started_at")?);
         assert!(column_exists(
             &connection,
             "process_output",
@@ -1429,6 +1452,43 @@ mod tests {
         )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"two\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn stores_pid_identity_token() -> Result<()> {
+        let dir = tempdir()?;
+        let store = Store::open(StoreConfig {
+            database_path: dir.path().join("pz.sqlite"),
+        })?;
+
+        let with_token = store.insert_process_with_timeout(
+            None,
+            &["echo".to_owned()],
+            dir.path(),
+            1234,
+            1234,
+            Some(1_700_000_000),
+            false,
+            &[],
+            &[],
+            None,
+        )?;
+        assert_eq!(store.pid_identity(with_token.id)?, Some(1_700_000_000));
+
+        // Rows recorded without a token read back as None.
+        let without_token = store.insert_process(
+            None,
+            &["echo".to_owned()],
+            dir.path(),
+            5678,
+            5678,
+            false,
+            &[],
+            &[],
+        )?;
+        assert_eq!(store.pid_identity(without_token.id)?, None);
 
         Ok(())
     }

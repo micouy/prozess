@@ -64,6 +64,9 @@ impl Supervisor {
             }
         };
         let pid = child.id().context("spawned process did not expose a pid")?;
+        // Captured immediately so later liveness checks can tell this
+        // process apart from an unrelated one that recycled its pid.
+        let pid_started_at = crate::pid_identity::current_token(pid);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let process = store.insert_process_with_timeout(
@@ -72,6 +75,7 @@ impl Supervisor {
             &cwd,
             pid,
             pid,
+            pid_started_at,
             spec.inherit_env,
             &spec.env_files,
             &env_keys,

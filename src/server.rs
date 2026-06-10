@@ -299,6 +299,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_records_pid_identity_on_spawn() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let command = vec!["/bin/sleep".to_owned(), "5".to_owned()];
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(command, dir.path()),
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        let token = store.pid_identity(process.id)?;
+        assert!(token.is_some(), "spawn should record a pid identity token");
+        assert!(crate::pid_identity::is_alive(
+            process.pid.context("spawned process should have a pid")?,
+            token,
+        ));
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: true,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn daemon_spawns_process_and_captures_stdout() -> Result<()> {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
