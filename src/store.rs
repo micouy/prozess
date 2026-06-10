@@ -174,11 +174,11 @@ impl Store {
             .execute(
                 "
                 INSERT INTO processes (
-                    command, cwd, status, error_message, inherit_env, env_files, env_keys, finished_at
+                    name, command, cwd, status, error_message, inherit_env, env_files, env_keys, finished_at
                 )
-                VALUES (?1, ?2, 'failed', ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP)
+                VALUES (?1, ?2, ?3, 'failed', ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
                 ",
-                params![command_json, cwd, error_message, inherit_env, env_files_json, env_keys_json],
+                params![name, command_json, cwd, error_message, inherit_env, env_files_json, env_keys_json],
             )
             .context("failed to insert failed process")?;
 
@@ -1025,9 +1025,18 @@ mod tests {
         assert_eq!(process.env.env_files, vec!["/tmp/test.env"]);
         assert_eq!(process.env.env_keys, vec!["SECRET"]);
 
+        // Re-read from the database: the returned summary used to claim a
+        // name that was never stored.
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, ProcessStatus::Failed);
+        assert_eq!(process.name, Some("missing".to_owned()));
         assert_eq!(process.error_message, Some("not found".to_owned()));
+        assert_eq!(
+            store.resolve_process_id(&crate::protocol::ProcessSelector::Name(
+                "missing".to_owned()
+            ))?,
+            process.id
+        );
 
         Ok(())
     }
