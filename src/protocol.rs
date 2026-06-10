@@ -39,6 +39,8 @@ pub enum Request {
         after_id: Option<i64>,
         since_ms: Option<i64>,
         until_ms: Option<i64>,
+        /// Overrides `after_id`: read only the last N lines (0 = none).
+        tail_lines: Option<u64>,
     },
 }
 
@@ -113,7 +115,11 @@ pub enum Response {
     ProcessDetails(ProcessDetails),
     ResourceSnapshot(ResourceSnapshot),
     PortList(PortList),
-    Output(Vec<OutputChunk>),
+    Output {
+        chunks: Vec<OutputChunk>,
+        /// Next poll's `after_id`; valid even when `chunks` is empty.
+        resume_after_id: i64,
+    },
     Error {
         message: String,
     },

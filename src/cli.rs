@@ -139,7 +139,8 @@ pub struct LogsArgs {
     #[arg(short, long)]
     pub follow: bool,
 
-    /// Print only the last N lines.
+    /// Print only the last N lines. With --follow, replay only the last
+    /// N lines before following; --tail 0 shows new output only.
     #[arg(long)]
     pub tail: Option<usize>,
 
@@ -148,7 +149,7 @@ pub struct LogsArgs {
     pub since: Option<String>,
 
     /// Show chunks captured until this duration ago, e.g. 10s, 5m, 1h.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "follow")]
     pub until: Option<String>,
 }
 

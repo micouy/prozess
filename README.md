@@ -45,6 +45,8 @@ pz run --inherit-env -- /usr/bin/env
 pz ps
 pz show api
 pz logs api -f
+pz logs api --tail 50
+pz logs api -f --tail 0   # follow new output only, no replay
 pz stop api
 pz stop api --force
 pz wait api
