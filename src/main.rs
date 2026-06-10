@@ -313,8 +313,7 @@ async fn follow_logs(
 ) -> Result<()> {
     let client = Client::new();
     let mut after_id = None;
-    // Positions the first read; every later read resumes from the cursor
-    // the daemon returns.
+    // First read only; later reads resume from the returned cursor.
     let mut tail_lines = tail_lines.map(|tail| tail as u64);
     let mut quiet_polls_after_exit = 0;
 

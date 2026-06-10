@@ -144,7 +144,6 @@ fn logs_follow_tail_replays_only_requested_lines() -> Result<()> {
     )?;
     assert_eq!(String::from_utf8(logs.stdout)?, "two\nthree\n");
 
-    // -f --tail 0 replays nothing.
     let logs = run_pz(
         &binary,
         &runtime_dir,
@@ -153,7 +152,6 @@ fn logs_follow_tail_replays_only_requested_lines() -> Result<()> {
     )?;
     assert_eq!(String::from_utf8(logs.stdout)?, "");
 
-    // --until cannot be combined with --follow.
     let output = Command::new(&binary)
         .args(["logs", "1", "-f", "--until", "10s"])
         .env("PZ_RUNTIME_DIR", runtime_dir.path())

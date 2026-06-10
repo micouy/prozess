@@ -39,10 +39,7 @@ pub enum Request {
         after_id: Option<i64>,
         since_ms: Option<i64>,
         until_ms: Option<i64>,
-        /// When set, start reading at the position that covers exactly the
-        /// last N lines (within the time window, if one is given), instead
-        /// of at `after_id`. `0` means "past everything stored so far",
-        /// i.e. follow from now.
+        /// Overrides `after_id`: read only the last N lines (0 = none).
         tail_lines: Option<u64>,
     },
 }
@@ -120,8 +117,7 @@ pub enum Response {
     PortList(PortList),
     Output {
         chunks: Vec<OutputChunk>,
-        /// Pass as `after_id` in the next poll to resume exactly where
-        /// this read ended — meaningful even when `chunks` is empty.
+        /// Next poll's `after_id`; valid even when `chunks` is empty.
         resume_after_id: i64,
     },
     Error {

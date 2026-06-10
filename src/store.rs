@@ -388,15 +388,9 @@ impl Store {
         Ok(())
     }
 
-    /// Reads chunks after `after_id`, within the optional time window.
-    ///
-    /// When `tail_lines` is set it overrides `after_id`: the read starts at
-    /// the position covering exactly the last N lines within the window
-    /// (the boundary chunk is sliced on a line boundary). `0` reads
-    /// nothing and positions past everything stored so far.
-    ///
-    /// Also returns the cursor to resume from (`after_id` for the next
-    /// poll), meaningful even when no chunks are returned.
+    /// Returns matching chunks and the cursor to resume from (valid even
+    /// when nothing matched). `tail_lines` overrides `after_id`: only the
+    /// last N lines of the window are read (0 = none).
     pub fn read_output(
         &self,
         process_id: i64,
@@ -533,10 +527,9 @@ fn stream_name(stream: OutputStream) -> &'static str {
     }
 }
 
-/// Walks back from the newest chunk within the window until `tail_lines`
-/// lines are covered. Returns `(start, trim_lines)`: the `id > start`
-/// position to read from, and how many leading lines of the boundary chunk
-/// exceed the requested count and must be sliced off.
+/// Returns `(start, trim_lines)`: the `id > start` position covering the
+/// last `tail_lines` lines of the window, and how many surplus leading
+/// lines of the boundary chunk to slice off.
 fn seek_tail(
     connection: &Connection,
     process_id: i64,
@@ -591,7 +584,6 @@ fn seek_tail(
         let (id, chunk) = row.context("failed to decode tail seek row")?;
 
         if tail_lines == 0 {
-            // Nothing should be replayed; position past the newest chunk.
             return Ok((id, 0));
         }
 
@@ -611,7 +603,6 @@ fn seek_tail(
     Ok((0, 0))
 }
 
-/// Drops the first `lines` lines (newline-terminated prefixes) of `data`.
 fn trim_leading_lines(data: &[u8], lines: u64) -> Vec<u8> {
     let mut start = 0;
 
@@ -1188,7 +1179,6 @@ mod tests {
             &[],
         )?;
 
-        // Empty store: tail reads nothing, cursor starts at the beginning.
         let (chunks, resume) =
             store.read_output(process.id, OutputStream::All, None, None, None, Some(0))?;
         assert!(chunks.is_empty());
@@ -1204,14 +1194,12 @@ mod tests {
         assert!(chunks.is_empty());
         assert_eq!(resume, 3);
 
-        // tail 1 is satisfied by the newest chunk alone.
         let (chunks, resume) =
             store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"three\n");
         assert_eq!(resume, 3);
 
-        // tail 2 crosses into the middle chunk.
         let (chunks, _) =
             store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
         assert_eq!(chunks.len(), 2);
@@ -1232,7 +1220,6 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].data, b"one\ntwo\n");
 
-        // Stream filters count only matching chunks.
         let (chunks, _) =
             store.read_output(process.id, OutputStream::Stdout, None, None, None, Some(2))?;
         assert_eq!(chunks.len(), 2);
@@ -1305,7 +1292,6 @@ mod tests {
             store.read_output(process.id, OutputStream::All, None, None, Some(0), Some(1))?;
         assert!(chunks.is_empty());
 
-        // Window containing both: tail 1 returns only the newest.
         let now = now_ms()?;
         let (chunks, _) = store.read_output(
             process.id,
