@@ -5,6 +5,78 @@ use assert_cmd::cargo::cargo_bin;
 use tempfile::tempdir;
 
 #[test]
+fn config_env_is_applied_at_spawn_and_restartable() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let config_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+    let config_path = config_dir.path().join("pz.toml");
+    std::fs::write(&config_path, "[env]\nFROM_CONFIG = \"yes\"\n")?;
+    let run_pz_cfg = |args: &[&str]| -> Result<std::process::Output> {
+        let output = Command::new(&binary)
+            .args(args)
+            .env("PZ_RUNTIME_DIR", runtime_dir.path())
+            .env("PZ_STATE_DIR", state_dir.path())
+            .env("PZ_CONFIG", &config_path)
+            .output()
+            .with_context(|| format!("failed to run pz {}", args.join(" ")))?;
+        Ok(output)
+    };
+
+    // Daemon inherits PZ_CONFIG from `daemon start`.
+    assert!(run_pz_cfg(&["daemon", "start"])?.status.success());
+    assert!(
+        run_pz_cfg(&["run", "--name", "app", "--", "/usr/bin/env"])?
+            .status
+            .success()
+    );
+    run_pz_cfg(&["wait", "app"])?;
+    wait_for_logs(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "app"],
+        |logs| logs.contains("FROM_CONFIG=yes"),
+    )?;
+
+    // Config env is re-resolved at restart instead of blocking it.
+    let restart = run_pz_cfg(&["restart", "app"])?;
+    assert!(
+        restart.status.success(),
+        "restart with config env failed: {}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+
+    // Genuine inline --env still blocks restart.
+    assert!(
+        run_pz_cfg(&[
+            "run",
+            "--name",
+            "inline",
+            "--env",
+            "SECRET=x",
+            "--",
+            "/usr/bin/env"
+        ])?
+        .status
+        .success()
+    );
+    run_pz_cfg(&["wait", "inline"])?;
+    let restart = run_pz_cfg(&["restart", "inline"])?;
+    assert!(!restart.status.success());
+    let stderr = String::from_utf8(restart.stderr)?;
+    assert!(
+        stderr.contains("inline env values were not stored"),
+        "{stderr}"
+    );
+
+    assert!(run_pz_cfg(&["daemon", "stop"])?.status.success());
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn daemon_start_runs_in_background() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;

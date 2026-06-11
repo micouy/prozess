@@ -11,7 +11,6 @@ mod store;
 mod supervisor;
 
 use std::{
-    collections::BTreeMap,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -195,25 +194,14 @@ fn run_spec(args: RunArgs) -> Result<RunSpec> {
             .map(|path| absolute_path(path, &cli_cwd).map(|path| path.display().to_string()))
             .collect::<Result<Vec<_>>>()?,
     );
-    let mut env = config
-        .env
-        .into_iter()
-        .map(|env| (env.key, env.value))
-        .collect::<BTreeMap<_, _>>();
-
-    for env_var in args
+    // Config [env] is applied by the daemon at spawn time, not merged
+    // here: only genuine --env values are irreproducible and must make
+    // a process unrestartable.
+    let env = args
         .env
         .iter()
         .map(|value| parse_env_var(value))
-        .collect::<Result<Vec<_>>>()?
-    {
-        env.insert(env_var.key, env_var.value);
-    }
-
-    let env = env
-        .into_iter()
-        .map(|(key, value)| EnvVar { key, value })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(RunSpec {
         name: args.name,
