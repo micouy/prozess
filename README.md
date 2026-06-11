@@ -42,7 +42,8 @@ pz run --inherit-env -- /usr/bin/env
 ## Inspect And Control
 
 ```sh
-pz ps
+pz ps          # running and lost processes
+pz ps --all    # finished ones too
 pz show api
 pz logs api -f
 pz logs api --tail 50

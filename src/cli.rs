@@ -54,8 +54,8 @@ pub enum Command {
     /// Show listening TCP ports owned by a running process group.
     Ports { process: String },
 
-    /// List tracked processes.
-    Ps,
+    /// List running and lost processes.
+    Ps(PsArgs),
 
     /// Show details for one process.
     Show { process: String },
@@ -108,6 +108,13 @@ pub struct RunArgs {
     /// Command and arguments to run. Use `--` before commands with flags.
     #[arg(required = true, trailing_var_arg = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PsArgs {
+    /// Also show finished processes (exited, killed, failed, timed out).
+    #[arg(short, long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Args)]

@@ -23,6 +23,7 @@ invalidates a decision must update this file in the same PR.
   - [Log storage and cursors](#log-storage-and-cursors)
   - [Tail and follow](#tail-and-follow)
 - [CLI Behavior](#cli-behavior)
+  - [Process listing](#process-listing)
   - [Broken pipe handling](#broken-pipe-handling)
 
 ## Architecture
@@ -208,6 +209,14 @@ parsed flag is a bug; combinations that cannot work (`-f --until`) are
 rejected.
 
 ## CLI Behavior
+
+### Process listing
+
+`pz ps` shows running and lost processes by default; `--all` adds the
+finished ones. Lost rows stay visible without `--all` because a lost
+process may still be alive and holding ports — hiding it would hide
+exactly what needs attention. The filter is presentation, so it lives in
+the client; the daemon returns every row.
 
 ### Broken pipe handling
 
