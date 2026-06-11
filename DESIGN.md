@@ -78,14 +78,16 @@ signals target the group (`kill(-pgid, sig)`) so process trees die together.
 ### Empty environment by default; env values are never stored
 
 Processes start with an empty environment unless the user passes
-`--inherit-env`, `--env-file`, or `--env`, or sets config `[env]`
-defaults. The registry stores env *keys* and env-file *paths*, never
-values, so secrets do not land in SQLite.
+`--inherit-env`, `--env-file`, or `--env`, or defines default env vars in
+the `[env]` section of the config file (`~/.config/pz.toml`). The
+registry stores env *keys* and env-file *paths*, never values, so secrets
+do not land in SQLite.
 
 Reproducible sources are resolved by the daemon at spawn time — env files
-are re-read and config `[env]` is re-applied on every spawn, including
-restarts, so editing them affects the next (re)start. Only inline `--env`
-values are irreproducible; they alone make a process unrestartable.
+are re-read and the config file's `[env]` defaults are re-applied on
+every spawn, including restarts, so editing them affects the next
+(re)start. Only inline `--env` values are irreproducible; they alone make
+a process unrestartable.
 
 ### The daemon never kills processes at startup; lost stays lost
 

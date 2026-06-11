@@ -95,8 +95,10 @@ PATH = [
 JAVA_HOME = "/path/to/java"
 ```
 
-Config env values are applied by the daemon at spawn time, including on
-`pz restart`. `pz` stores env keys and env-file paths, not env values.
+Env vars from the `[env]` section above are applied by the daemon when it
+starts a process, including on `pz restart` — so config edits take effect
+on the next (re)start. `pz` stores env keys and env-file paths, not env
+values.
 
 ## Notes
 
