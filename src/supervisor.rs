@@ -135,8 +135,9 @@ fn effective_env(spec: &RunSpec) -> Result<BTreeMap<String, String>> {
         }
     }
 
-    // Config [env] is resolved here, at spawn time, so restart reproduces
-    // it from the current config the same way it re-reads env files.
+    // The config's [env] section is resolved here, at spawn time, so
+    // restart reproduces it from the current config the same way it
+    // re-reads env files.
     for env_var in crate::config::Config::load()?.env {
         env.insert(env_var.key, env_var.value);
     }

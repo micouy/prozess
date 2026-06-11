@@ -194,9 +194,9 @@ fn run_spec(args: RunArgs) -> Result<RunSpec> {
             .map(|path| absolute_path(path, &cli_cwd).map(|path| path.display().to_string()))
             .collect::<Result<Vec<_>>>()?,
     );
-    // Config [env] is applied by the daemon at spawn time, not merged
-    // here: only genuine --env values are irreproducible and must make
-    // a process unrestartable.
+    // The config's [env] section is applied by the daemon at spawn time,
+    // not merged here: only genuine --env values are irreproducible and
+    // must make a process unrestartable.
     let env = args
         .env
         .iter()
