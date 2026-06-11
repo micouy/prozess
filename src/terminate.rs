@@ -28,7 +28,7 @@ pub async fn kill_group_confirmed(pgid: u32, force: bool, grace: Duration) -> Re
 
     if !force {
         match kill(group, Signal::SIGTERM) {
-            Ok(()) | Err(Errno::ESRCH) => {}
+            Ok(()) | Err(Errno::ESRCH) | Err(Errno::EPERM) => {}
             Err(error) => {
                 return Err(error)
                     .with_context(|| format!("failed to send SIGTERM to process group {pgid}"));
@@ -41,7 +41,7 @@ pub async fn kill_group_confirmed(pgid: u32, force: bool, grace: Duration) -> Re
     }
 
     match kill(group, Signal::SIGKILL) {
-        Ok(()) | Err(Errno::ESRCH) => {}
+        Ok(()) | Err(Errno::ESRCH) | Err(Errno::EPERM) => {}
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("failed to send SIGKILL to process group {pgid}"));
@@ -55,11 +55,14 @@ pub async fn kill_group_confirmed(pgid: u32, force: bool, grace: Duration) -> Re
     bail!("process group {pgid} did not exit after SIGKILL")
 }
 
+// EPERM counts as dead: macOS reports EPERM (not ESRCH) for groups whose
+// only members are zombies, and a recycled pgid we no longer own must not
+// be signaled further — either way our target is gone.
 async fn wait_until_dead(group: Pid, budget: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + budget;
 
     loop {
-        if kill(group, None) == Err(Errno::ESRCH) {
+        if matches!(kill(group, None), Err(Errno::ESRCH | Errno::EPERM)) {
             return true;
         }
 
@@ -144,6 +147,59 @@ mod tests {
 
         let signal = kill_group_confirmed(pgid, false, Duration::from_secs(5)).await?;
         assert!(matches!(signal, StopSignal::Term));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn surviving_grandchild_is_escalated_with_the_group() -> Result<()> {
+        // The parent dies politely on TERM, but its TERM-ignoring
+        // grandchild keeps the group alive; escalation must end it too.
+        let dir = tempfile::tempdir()?;
+        let ready = dir.path().join("ready");
+        let script = format!(
+            "(trap '' TERM; touch {}; while :; do sleep 0.1; done) & sleep 30",
+            ready.display()
+        );
+        let (mut child, pgid) = spawn_group("/bin/sh", &["-c", &script]).await?;
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let (signal, _) = tokio::join!(
+            kill_group_confirmed(pgid, false, Duration::from_millis(300)),
+            child.wait(),
+        );
+        assert!(matches!(signal?, StopSignal::Kill));
+        assert_eq!(kill(Pid::from_raw(-(pgid as i32)), None), Err(Errno::ESRCH));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unreaped_zombie_group_counts_as_dead() -> Result<()> {
+        // macOS reports EPERM, not ESRCH, for a zombie-only group.
+        let (child, pgid) = spawn_group("/usr/bin/true", &[]).await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let signal = kill_group_confirmed(pgid, false, Duration::from_millis(300)).await?;
+        assert!(matches!(signal, StopSignal::Term));
+        drop(child);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_kills_both_succeed() -> Result<()> {
+        let (mut child, pgid) = spawn_group("/bin/sleep", &["30"]).await?;
+
+        let (first, second, _) = tokio::join!(
+            kill_group_confirmed(pgid, false, Duration::from_secs(2)),
+            kill_group_confirmed(pgid, true, Duration::from_secs(2)),
+            child.wait(),
+        );
+        first?;
+        second?;
 
         Ok(())
     }
