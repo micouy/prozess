@@ -55,14 +55,11 @@ pub async fn kill_group_confirmed(pgid: u32, force: bool, grace: Duration) -> Re
     bail!("process group {pgid} did not exit after SIGKILL")
 }
 
-// EPERM counts as dead: macOS reports EPERM (not ESRCH) for groups whose
-// only members are zombies, and a recycled pgid we no longer own must not
-// be signaled further — either way our target is gone.
 async fn wait_until_dead(group: Pid, budget: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + budget;
 
     loop {
-        if matches!(kill(group, None), Err(Errno::ESRCH | Errno::EPERM)) {
+        if !group_alive(group) {
             return true;
         }
 
@@ -72,6 +69,53 @@ async fn wait_until_dead(group: Pid, budget: Duration) -> bool {
 
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+// Zombies count as dead — exited, ports released, only the pid entry
+// lingers until reaped — but the platforms report them differently:
+// macOS answers EPERM for a zombie-only group (and EPERM also means a
+// recycled pgid we must not signal further), while Linux happily
+// "signals" zombies, so a successful kill(0) there proves nothing and
+// the member states have to come from /proc.
+#[cfg(target_os = "linux")]
+fn group_alive(group: Pid) -> bool {
+    if kill(group, None).is_err() {
+        return false;
+    }
+
+    let pgid = group.as_raw().unsigned_abs().to_string();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return true;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().filter(|name| name.parse::<u32>().is_ok()) else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        // Fields after the parenthesized comm: state, ppid, pgrp, ...
+        let Some((_, rest)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let mut fields = rest.split_whitespace();
+        let state = fields.next();
+        let _ppid = fields.next();
+        let pgrp = fields.next();
+
+        if pgrp == Some(pgid.as_str()) && state != Some("Z") {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn group_alive(group: Pid) -> bool {
+    !matches!(kill(group, None), Err(Errno::ESRCH | Errno::EPERM))
 }
 
 #[cfg(test)]
