@@ -49,6 +49,7 @@ pz logs api --tail 50
 pz logs api -f --tail 0   # follow new output only, no replay
 pz stop api
 pz stop api --force
+pz stop api --grace 10s   # SIGTERM, wait, then SIGKILL; default grace is 5s
 pz wait api
 pz restart api
 ```
@@ -104,6 +105,7 @@ values.
 
 - Commands are spawned directly, not through a shell.
 - Processes are placed in their own process groups.
-- `pz stop` signals the process group.
+- `pz stop` signals the process group and returns once it is confirmed
+  dead, escalating SIGTERM to SIGKILL after the grace period.
 - Logs are captured after spawn and can be read or followed later.
 - If the daemon dies, previously running processes are marked `lost` on daemon restart.

@@ -8,7 +8,7 @@ use crate::{
     daemon_state::{DaemonState, ProcessLifecycle},
     protocol::{
         PortInfo, PortList, ProcessDetails, ProcessStatus, Request, ResourceProcess,
-        ResourceSnapshot, Response, StopSignal,
+        ResourceSnapshot, Response,
     },
     store::{Store, TimeoutSpec},
     supervisor::Supervisor,
@@ -46,7 +46,11 @@ impl Service {
             },
             Request::DaemonStop => Response::DaemonStopping,
             Request::Spawn { spec } => Response::Spawned(self.spawn_process(spec)?),
-            Request::StopProcess { selector, force } => self.stop_process(&selector, force)?,
+            Request::StopProcess {
+                selector,
+                force,
+                grace_ms,
+            } => self.stop_process(&selector, force, grace_ms).await?,
             Request::SetTimeout {
                 selector,
                 timeout_ms,
@@ -55,7 +59,7 @@ impl Service {
                 Response::WaitedProcess(self.wait_process(&selector).await?)
             }
             Request::RestartProcess { selector } => {
-                Response::Spawned(self.restart_process(&selector)?)
+                Response::Spawned(self.restart_process(&selector).await?)
             }
             Request::Resources { selector } => {
                 Response::ResourceSnapshot(self.resources(&selector)?)
@@ -129,7 +133,7 @@ impl Service {
         Ok(processes)
     }
 
-    fn restart_process(
+    async fn restart_process(
         &self,
         selector: &crate::protocol::ProcessSelector,
     ) -> Result<crate::protocol::ProcessSummary> {
@@ -137,8 +141,10 @@ impl Service {
         let spec = self.store.restart_spec(id)?;
         let details = self.store.get_process_details(id)?;
 
-        if details.status == ProcessStatus::Running {
-            self.stop_process(selector, false)?;
+        // Lost-but-alive included: restart is explicit intent to replace
+        // it, and the successor needs its ports.
+        if matches!(details.status, ProcessStatus::Running | ProcessStatus::Lost) {
+            self.stop_process(selector, false, None).await?;
         }
 
         self.spawn_process(spec)
@@ -325,12 +331,20 @@ impl Service {
             tokio::time::sleep(Duration::from_millis(timeout.duration_ms)).await;
 
             if let Some(process) = state.process(id) {
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(-(process.pgid as i32)),
-                    nix::sys::signal::Signal::SIGTERM,
-                );
+                // Marked first so the reaper records timed_out, not exited.
                 let _ = store.mark_process_timed_out(id);
                 state.finish_process(id, None);
+                // Detached: finish_process (ours above, or the reaper's
+                // when a group member exits) aborts this timeout task, and
+                // the escalation must survive that to kill the whole group.
+                tokio::spawn(async move {
+                    let _ = crate::terminate::kill_group_confirmed(
+                        process.pgid,
+                        false,
+                        crate::terminate::DEFAULT_GRACE,
+                    )
+                    .await;
+                });
             }
         });
         self.state.set_timeout(id, Some(timeout));
@@ -338,13 +352,17 @@ impl Service {
         Ok(())
     }
 
-    fn stop_process(
+    async fn stop_process(
         &self,
         selector: &crate::protocol::ProcessSelector,
         force: bool,
+        grace_ms: Option<u64>,
     ) -> Result<Response> {
         let id = self.store.resolve_process_id(selector)?;
         let process = self.store.get_process(id)?;
+        if !matches!(process.status, ProcessStatus::Running | ProcessStatus::Lost) {
+            anyhow::bail!("process {id} is not running (status: {})", process.status);
+        }
         let pgid = self
             .state
             .process(id)
@@ -352,24 +370,15 @@ impl Service {
             .or(process.pgid)
             .or(process.pid)
             .context("process has no pid or process group to stop")?;
-        let signal = if force {
-            nix::sys::signal::Signal::SIGKILL
-        } else {
-            nix::sys::signal::Signal::SIGTERM
-        };
+        let grace = grace_ms
+            .map(Duration::from_millis)
+            .unwrap_or(crate::terminate::DEFAULT_GRACE);
 
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(-(pgid as i32)), signal)
-            .with_context(|| format!("failed to send {signal} to process group {pgid}"))?;
+        let signal = crate::terminate::kill_group_confirmed(pgid, force, grace).await?;
+        // Death is confirmed; killed overwrites the reaper's exited.
         self.store.mark_process_killed(id)?;
 
-        Ok(Response::StoppedProcess {
-            id,
-            signal: if force {
-                StopSignal::Kill
-            } else {
-                StopSignal::Term
-            },
-        })
+        Ok(Response::StoppedProcess { id, signal })
     }
 
     async fn wait_process(

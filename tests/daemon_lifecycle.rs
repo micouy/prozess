@@ -77,6 +77,73 @@ fn config_env_is_applied_at_spawn_and_restartable() -> Result<()> {
 }
 
 #[test]
+fn stop_escalates_and_does_not_block_other_clients() -> Result<()> {
+    use std::time::Instant;
+
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &[
+            "run",
+            "--name",
+            "stubborn",
+            "--",
+            "/bin/sh",
+            "-c",
+            "trap '' TERM; echo ready; while :; do sleep 0.1; done",
+        ],
+    )?;
+    wait_for_logs(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "stubborn"],
+        |logs| logs.contains("ready"),
+    )?;
+
+    let stop_started = Instant::now();
+    let stop = Command::new(&binary)
+        .args(["stop", "stubborn", "--grace", "3s"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn pz stop")?;
+
+    // While the stop waits out its grace period, other clients must not
+    // be blocked.
+    sleep(Duration::from_millis(300));
+    let ps_started = Instant::now();
+    run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+    let ps_elapsed = ps_started.elapsed();
+    assert!(
+        ps_elapsed < Duration::from_secs(2),
+        "ps blocked behind stop for {ps_elapsed:?}"
+    );
+
+    let output = stop.wait_with_output().context("failed to wait for stop")?;
+    let stop_elapsed = stop_started.elapsed();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("signal: KILL"), "{stdout}");
+    assert!(
+        stop_elapsed >= Duration::from_millis(2500),
+        "stop should have waited out the grace period, took {stop_elapsed:?}"
+    );
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn daemon_start_runs_in_background() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;

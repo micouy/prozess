@@ -9,6 +9,7 @@ mod server;
 mod service;
 mod store;
 mod supervisor;
+mod terminate;
 
 use std::{
     io::Write,
@@ -51,6 +52,7 @@ async fn main() -> Result<()> {
                 .send(Request::StopProcess {
                     selector: process_selector(&args.process),
                     force: args.force,
+                    grace_ms: args.grace.as_deref().map(parse_duration_ms).transpose()?,
                 })
                 .await,
         ),

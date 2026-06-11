@@ -15,6 +15,7 @@ invalidates a decision must update this file in the same PR.
   - [Commands are spawned directly, in their own process group](#commands-are-spawned-directly-in-their-own-process-group)
   - [Empty environment by default; env values are never stored](#empty-environment-by-default-env-values-are-never-stored)
   - [A name has at most one live generation](#a-name-has-at-most-one-live-generation)
+  - [Kills are confirmed and escalate](#kills-are-confirmed-and-escalate)
   - [The daemon never kills processes at startup; lost stays lost](#the-daemon-never-kills-processes-at-startup-lost-stays-lost)
   - [Pid liveness checks require an identity token](#pid-liveness-checks-require-an-identity-token)
 - [Logs](#logs)
@@ -54,10 +55,12 @@ per-connection and `journal_mode` cannot change inside a transaction.
 
 The Unix-socket protocol is a single JSON request followed by a single JSON
 response, then the connection closes. There is no streaming. Follow-style
-commands are implemented by client polling with cursors. This keeps the
-daemon's accept loop simple; if real-time push is ever needed, the protocol
-gets redesigned then (framed, concurrent connections), and the polling
-queries become the backfill path.
+commands are implemented by client polling with cursors. Connections are
+handled concurrently — long-running requests (a stop waiting out its grace
+period) must not stall other clients — which is safe because cross-request
+invariants live in the database (e.g. the unique index on running names),
+not in handler ordering. If real-time push is ever needed, the protocol
+gets redesigned then, and the polling queries become the backfill path.
 
 ### Runtime directory is keyed by uid
 
@@ -100,6 +103,18 @@ to debug than any error. Enforcement is atomic in the daemon: the name is
 reserved as a row *before* the child is spawned, backed by a partial
 unique index on running names, so a conflict can never leak an untracked
 child. Failed and dead generations do not block the name.
+
+### Kills are confirmed and escalate
+
+One shared primitive terminates process groups: SIGTERM, a grace period
+(default 5s, `pz stop --grace`), then SIGKILL, polling until every member
+is confirmed gone. `stop`, `restart`, and timeouts all use it; `stop
+--force` skips straight to SIGKILL. Fire-and-forget signals are not
+acceptable where something spawns afterwards — the successor typically
+needs the predecessor's ports — so `stop` and `restart` respond only
+once the group is confirmed dead, and `restart` (including of a
+lost-but-alive generation) spawns only after that. The response reports
+the signal that actually worked.
 
 ### The daemon never kills processes at startup; lost stays lost
 
