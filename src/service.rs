@@ -61,7 +61,7 @@ impl Service {
                 Response::ResourceSnapshot(self.resources(&selector)?)
             }
             Request::Ports { selector } => Response::PortList(self.ports(&selector)?),
-            Request::ListProcesses => Response::ProcessList(self.list_processes()?),
+            Request::ListProcesses { all } => Response::ProcessList(self.list_processes(all)?),
             Request::ShowProcess { selector } => Response::ProcessDetails(
                 self.store
                     .get_process_details(self.store.resolve_process_id(&selector)?)?,
@@ -107,8 +107,28 @@ impl Service {
         Ok(process)
     }
 
-    fn list_processes(&self) -> Result<Vec<crate::protocol::ProcessSummary>> {
-        let mut processes = self.store.list_processes()?;
+    fn list_processes(&self, all: bool) -> Result<Vec<crate::protocol::ProcessSummary>> {
+        let mut processes = self.store.list_processes(!all)?;
+
+        if !all {
+            // A lost row whose pid no longer matches its identity token is
+            // history with an unknown exit code, not a live process.
+            let mut keep = Vec::with_capacity(processes.len());
+            for process in processes {
+                if process.status == ProcessStatus::Lost {
+                    let token = self.store.pid_identity(process.id)?;
+                    let alive = process
+                        .pid
+                        .is_some_and(|pid| crate::pid_identity::is_alive(pid, token));
+                    if !alive {
+                        continue;
+                    }
+                }
+                keep.push(process);
+            }
+            processes = keep;
+        }
+
         for process in &mut processes {
             if process.status != ProcessStatus::Running {
                 continue;

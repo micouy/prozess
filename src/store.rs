@@ -279,16 +279,26 @@ impl Store {
             .context("failed to get process")
     }
 
-    pub fn list_processes(&self) -> Result<Vec<ProcessSummary>> {
+    /// `live_only` restricts the query to running and lost rows, so the
+    /// finished history is never loaded.
+    pub fn list_processes(&self, live_only: bool) -> Result<Vec<ProcessSummary>> {
         let connection = self.connect()?;
+        let sql = if live_only {
+            "
+            SELECT id, name, status, pid, pgid, exit_code, command, error_message, timeout_ms, timeout_at_ms, inherit_env, env_files, env_keys
+            FROM processes
+            WHERE status IN ('running', 'lost')
+            ORDER BY id DESC
+            "
+        } else {
+            "
+            SELECT id, name, status, pid, pgid, exit_code, command, error_message, timeout_ms, timeout_at_ms, inherit_env, env_files, env_keys
+            FROM processes
+            ORDER BY id DESC
+            "
+        };
         let mut statement = connection
-            .prepare(
-                "
-                SELECT id, name, status, pid, pgid, exit_code, command, error_message, timeout_ms, timeout_at_ms, inherit_env, env_files, env_keys
-                FROM processes
-                ORDER BY id DESC
-                ",
-            )
+            .prepare(sql)
             .context("failed to prepare process list query")?;
 
         let processes = statement
@@ -1179,7 +1189,7 @@ mod tests {
             &[],
         )?;
 
-        let processes = store.list_processes()?;
+        let processes = store.list_processes(false)?;
         assert_eq!(processes.len(), 2);
         assert_eq!(processes[0].id, 2);
         assert_eq!(processes[0].name, Some("second".to_owned()));

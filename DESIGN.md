@@ -212,11 +212,13 @@ rejected.
 
 ### Process listing
 
-`pz ps` shows running and lost processes by default; `--all` adds the
-finished ones. Lost rows stay visible without `--all` because a lost
-process may still be alive and holding ports — hiding it would hide
-exactly what needs attention. The filter is presentation, so it lives in
-the client; the daemon returns every row.
+`pz ps` shows live processes by default — running, plus lost rows whose
+pid still matches its identity token. A lost-but-alive process may hold
+ports and is exactly what needs attention; a lost-but-dead one is history
+with an unknown exit code and only appears under `--all`, like other
+finished rows. The filter is a daemon-side query (the registry grows
+without bound, so finished history is never loaded or shipped for the
+default view, and the liveness facts live in the daemon).
 
 ### Broken pipe handling
 

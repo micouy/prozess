@@ -265,7 +265,7 @@ mod tests {
 
         wait_for_socket(&socket).await?;
 
-        let response = client.send(Request::ListProcesses).await?;
+        let response = client.send(Request::ListProcesses { all: true }).await?;
         let Response::ProcessList(processes) = response else {
             bail!("expected process list response");
         };
@@ -768,7 +768,7 @@ mod tests {
         let ports = wait_for_ports(&client, process.id).await?;
         assert!(ports.iter().any(|port| port.local_addr == "127.0.0.1"));
 
-        let response = client.send(Request::ListProcesses).await?;
+        let response = client.send(Request::ListProcesses { all: true }).await?;
         let Response::ProcessList(processes) = response else {
             bail!("expected process list response");
         };
@@ -898,7 +898,7 @@ mod tests {
             matches!(response, Response::Error { message } if message.contains("failed to spawn"))
         );
 
-        let response = client.send(Request::ListProcesses).await?;
+        let response = client.send(Request::ListProcesses { all: true }).await?;
         let Response::ProcessList(processes) = response else {
             bail!("expected process list response");
         };
@@ -1048,7 +1048,9 @@ mod tests {
         );
 
         // The conflict happened before anything spawned: exactly one row.
-        let Response::ProcessList(processes) = client.send(Request::ListProcesses).await? else {
+        let Response::ProcessList(processes) =
+            client.send(Request::ListProcesses { all: true }).await?
+        else {
             bail!("expected process list");
         };
         assert_eq!(processes.len(), 1);

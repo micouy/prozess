@@ -85,19 +85,11 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
-        Command::Ps(args) => match Client::new().send(Request::ListProcesses).await? {
-            Response::ProcessList(mut processes) => {
-                if !args.all {
-                    processes.retain(|process| {
-                        matches!(process.status, ProcessStatus::Running | ProcessStatus::Lost)
-                    });
-                }
-                print_process_list(&processes);
-                Ok(())
-            }
-            Response::Error { message } => bail!(message),
-            _ => bail!("daemon returned an unexpected process list response"),
-        },
+        Command::Ps(args) => print_response(
+            Client::new()
+                .send(Request::ListProcesses { all: args.all })
+                .await,
+        ),
         Command::Show { process } => print_response(
             Client::new()
                 .send(Request::ShowProcess {

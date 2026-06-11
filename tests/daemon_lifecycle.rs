@@ -163,7 +163,33 @@ fn ps_hides_finished_processes_unless_all() -> Result<()> {
     assert!(stdout.contains("alive"), "{stdout}");
     assert!(stdout.contains("lost"), "{stdout}");
 
-    run_pz(&binary, &runtime_dir, &state_dir, &["stop", "alive"])?;
+    // Once the orphan dies, the lost row is history: hidden by default,
+    // still in --all.
+    let show = run_pz(&binary, &runtime_dir, &state_dir, &["show", "alive"])?;
+    let pid = String::from_utf8(show.stdout)?
+        .lines()
+        .find_map(|line| line.strip_prefix("pid: ").map(str::to_owned))
+        .context("show should print a pid")?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--", "/bin/kill", "-9", &pid],
+    )?;
+    for _ in 0..100 {
+        let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+        if !String::from_utf8(ps.stdout)?.contains("alive") {
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+    assert!(!String::from_utf8(ps.stdout)?.contains("alive"));
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps", "--all"])?;
+    let stdout = String::from_utf8(ps.stdout)?;
+    assert!(stdout.contains("alive"), "{stdout}");
+    assert!(stdout.contains("lost"), "{stdout}");
+
     run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
     wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
 
