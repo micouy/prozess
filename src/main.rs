@@ -9,6 +9,7 @@ mod server;
 mod service;
 mod store;
 mod supervisor;
+mod terminate;
 
 use std::{
     io::Write,

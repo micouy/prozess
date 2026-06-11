@@ -13,8 +13,12 @@ Design decisions are recorded in DESIGN.md.
 - **Every PR must update DESIGN.md** if it adds, changes, or invalidates a
   design decision. A PR that changes behavior without touching DESIGN.md
   should explain why no decision changed.
-- Keep entries short but solid: state the decision and the reason, not the
-  implementation details.
+- Keep entries short but solid: state the decision and the reason. Detail
+  is welcome when the decision is technical (definitions, platform
+  behavior, accepted limitations).
+- Headers are topics, not headlines: "Definition of a dead process
+  group", never "Dead means no member can run again". The decision is
+  stated in the body, not performed in the title.
 
 ## Comments and docstrings
 
