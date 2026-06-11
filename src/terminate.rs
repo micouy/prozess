@@ -77,6 +77,10 @@ async fn wait_until_dead(group: Pid, budget: Duration) -> bool {
 // recycled pgid we must not signal further), while Linux happily
 // "signals" zombies, so a successful kill(0) there proves nothing and
 // the member states have to come from /proc.
+//
+// Known limit: on macOS, EPERM cannot distinguish "all zombies" from
+// "all privileged" (a setuid child, e.g. via sudo), so a group we could
+// never kill anyway is reported dead rather than erroring as on Linux.
 #[cfg(target_os = "linux")]
 fn group_alive(group: Pid) -> bool {
     if kill(group, None).is_err() {
