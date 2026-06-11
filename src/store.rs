@@ -465,9 +465,6 @@ impl Store {
     /// The pid identity token recorded at spawn time, if any. Compare with
     /// `pid_identity::current_token` before trusting that the stored pid
     /// still refers to the same process.
-    // TODO: consumed by lost-but-alive name conflicts and `run --replace`;
-    // remove the allow once those land.
-    #[allow(dead_code)]
     pub fn pid_identity(&self, id: i64) -> Result<Option<i64>> {
         let connection = self.connect()?;
 

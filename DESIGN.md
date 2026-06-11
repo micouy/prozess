@@ -17,6 +17,7 @@ invalidates a decision must update this file in the same PR.
   - [Environment handling](#environment-handling)
   - [Name uniqueness](#name-uniqueness)
   - [Definition of a dead process group](#definition-of-a-dead-process-group)
+  - [Stopping and restarting](#stopping-and-restarting)
   - [Lost processes](#lost-processes)
   - [Pid identity](#pid-identity)
 - [Logs](#logs)
@@ -164,6 +165,26 @@ Accepted limitations:
    double-forks) leaves the group; the group being dead says nothing
    about it. The process group is pz's containment boundary.
 
+### Stopping and restarting
+
+One shared primitive terminates process groups: SIGTERM, a grace period
+(default 5s, `pz stop --grace`), then SIGKILL, polling until the group is
+dead per the definition above. `stop --force` skips straight to SIGKILL.
+Fire-and-forget signals are not acceptable where something spawns
+afterwards — the successor typically needs the predecessor's ports — so
+`stop` and `restart` respond only once the group is confirmed dead, and
+`restart` spawns the successor only after that. The response reports the
+signal that actually worked.
+
+`restart` also replaces a lost-but-alive generation: like `stop`, it is
+explicit intent. Stopping a finished process is an error, not a no-op.
+
+Before signaling a *lost* row, the stored pid is verified against the
+pid identity token; on mismatch (the pid was recycled since the row was
+recorded) nothing is signaled and the row is simply marked killed.
+Running rows need no check: the daemon holds their unreaped children,
+which pins their pids.
+
 ### Lost processes
 
 When the daemon boots and finds registry rows from a previous daemon
@@ -182,6 +203,12 @@ token; later liveness checks compare it. A bare `kill(pid, 0)` is not
 sufficient evidence: acting on a recycled pid can kill an unrelated
 process. Rows recorded before tokens existed degrade to a bare existence
 check.
+
+Known limit: the token identifies the group *leader* only. A lost group
+whose leader was reaped while other members live is indistinguishable
+from a fully dead one, so those members are stranded (and the name is
+considered free). Per-member tokens would close this; accepted until it
+bites in practice.
 
 ## Logs
 

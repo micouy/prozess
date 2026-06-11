@@ -349,6 +349,7 @@ mod tests {
             .send(Request::StopProcess {
                 selector: ProcessSelector::Id(process.id),
                 force: true,
+                grace_ms: None,
             })
             .await?;
         client.send(Request::DaemonStop).await?;
@@ -578,6 +579,7 @@ mod tests {
             .send(Request::StopProcess {
                 selector: ProcessSelector::Id(process.id),
                 force: false,
+                grace_ms: None,
             })
             .await?;
         assert!(
@@ -589,6 +591,207 @@ mod tests {
         })?;
         let process = store.get_process(process.id)?;
         assert_eq!(process.status, crate::protocol::ProcessStatus::Killed);
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_stop_escalates_stubborn_process_and_confirms_death() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let ready = dir.path().join("ready");
+        let script = format!(
+            "trap '' TERM; touch {}; while :; do sleep 0.1; done",
+            ready.display()
+        );
+        let response = client
+            .send(Request::Spawn {
+                spec: test_run_spec(
+                    vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
+                    dir.path(),
+                ),
+            })
+            .await?;
+        let Response::Spawned(process) = response else {
+            bail!("expected spawned response");
+        };
+        let pid = process.pid.context("process should have a pid")?;
+        while !ready.exists() {
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let response = client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: false,
+                grace_ms: Some(300),
+            })
+            .await?;
+        assert!(
+            matches!(response, Response::StoppedProcess { id, signal: StopSignal::Kill } if id == process.id),
+            "expected escalation to SIGKILL, got {response:?}"
+        );
+        // The response means confirmed death, immediately assertable
+        // with the same liveness definition the primitive uses.
+        assert!(!crate::terminate::group_alive(pid));
+
+        let store = Store::open(StoreConfig {
+            database_path: database,
+        })?;
+        assert_eq!(
+            store.get_process(process.id)?.status,
+            crate::protocol::ProcessStatus::Killed
+        );
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_restart_confirms_death_before_respawn() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path());
+        spec.name = Some("svc".to_owned());
+        let Response::Spawned(old) = client.send(Request::Spawn { spec }).await? else {
+            bail!("expected spawned response");
+        };
+        let old_pid = old.pid.context("old generation should have a pid")?;
+
+        let Response::Spawned(new) = client
+            .send(Request::RestartProcess {
+                selector: ProcessSelector::Name("svc".to_owned()),
+            })
+            .await?
+        else {
+            bail!("expected spawned response");
+        };
+        // The old generation must be dead before its successor spawns.
+        assert!(!crate::terminate::group_alive(old_pid));
+        assert_ne!(new.pid, old.pid);
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(new.id),
+                force: true,
+                grace_ms: None,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_rejects_stopping_finished_process() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let Response::Spawned(process) = client
+            .send(Request::Spawn {
+                spec: test_run_spec(vec!["/bin/echo".to_owned(), "hi".to_owned()], dir.path()),
+            })
+            .await?
+        else {
+            bail!("expected spawned response");
+        };
+        wait_for_process_exit(&database, process.id, Some(0)).await?;
+
+        let Response::Error { message } = client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: false,
+                grace_ms: None,
+            })
+            .await?
+        else {
+            bail!("expected error response");
+        };
+        assert!(message.contains("is not running"), "{message}");
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_never_signals_a_recycled_lost_pgid() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+
+        // A lost row whose pid now belongs to a stranger: this very test
+        // process, with a token that cannot match it. If the daemon
+        // signals the pgid anyway, the canary dies and the test aborts.
+        let canary = std::process::id();
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        let id = store.reserve_process(
+            Some("stale"),
+            &["/bin/sleep".to_owned(), "30".to_owned()],
+            dir.path(),
+            false,
+            &[],
+            &[],
+        )?;
+        store.activate_process(id, canary, canary, Some(1))?;
+
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+        wait_for_socket(&socket).await?;
+
+        let response = client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Name("stale".to_owned()),
+                force: false,
+                grace_ms: None,
+            })
+            .await?;
+        assert!(
+            matches!(response, Response::StoppedProcess { id: stopped, signal: StopSignal::Term } if stopped == id),
+            "expected silent success, got {response:?}"
+        );
+        assert_eq!(
+            store.get_process(id)?.status,
+            crate::protocol::ProcessStatus::Killed
+        );
 
         client.send(Request::DaemonStop).await?;
         server.await??;
@@ -678,6 +881,7 @@ mod tests {
             .send(Request::StopProcess {
                 selector: ProcessSelector::Id(process.id),
                 force: true,
+                grace_ms: None,
             })
             .await?;
         client.send(Request::DaemonStop).await?;
@@ -725,6 +929,7 @@ mod tests {
             .send(Request::StopProcess {
                 selector: ProcessSelector::Id(process.id),
                 force: true,
+                grace_ms: None,
             })
             .await?;
         client.send(Request::DaemonStop).await?;
@@ -782,6 +987,7 @@ mod tests {
             .send(Request::StopProcess {
                 selector: ProcessSelector::Id(process.id),
                 force: true,
+                grace_ms: None,
             })
             .await?;
         client.send(Request::DaemonStop).await?;
@@ -1057,6 +1263,7 @@ mod tests {
             .send(Request::StopProcess {
                 selector: ProcessSelector::Name("api".to_owned()),
                 force: true,
+                grace_ms: None,
             })
             .await?;
         client.send(Request::DaemonStop).await?;
@@ -1123,6 +1330,7 @@ mod tests {
             .send(Request::StopProcess {
                 selector: ProcessSelector::Id(process.id),
                 force: true,
+                grace_ms: None,
             })
             .await?;
         client.send(Request::DaemonStop).await?;
