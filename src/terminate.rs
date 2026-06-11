@@ -215,7 +215,9 @@ mod tests {
             child.wait(),
         );
         assert!(matches!(signal?, StopSignal::Kill));
-        assert_eq!(kill(Pid::from_raw(-(pgid as i32)), None), Err(Errno::ESRCH));
+        // The grandchild may linger as a zombie until init reaps it; use
+        // the same liveness definition as the primitive.
+        assert!(!group_alive(Pid::from_raw(-(pgid as i32))));
 
         Ok(())
     }
