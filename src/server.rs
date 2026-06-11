@@ -835,6 +835,71 @@ mod tests {
         Ok(())
     }
 
+    // Slow (~5s): waits out the real TERM grace before the KILL lands.
+    #[tokio::test]
+    async fn daemon_timeout_escalates_stubborn_process() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let ready = dir.path().join("ready");
+        let script = format!(
+            "trap '' TERM; touch {}; while :; do sleep 0.1; done",
+            ready.display()
+        );
+        let mut spec = test_run_spec(
+            vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
+            dir.path(),
+        );
+        spec.timeout_ms = Some(100);
+        let Response::Spawned(process) = client.send(Request::Spawn { spec }).await? else {
+            bail!("expected spawned response");
+        };
+        let pid = process.pid.context("process should have a pid")?;
+        while !ready.exists() {
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let store = Store::open(StoreConfig {
+            database_path: database,
+        })?;
+        // The status flips at the deadline, before the group is dead.
+        for _ in 0..100 {
+            if store.get_process(process.id)?.status == crate::protocol::ProcessStatus::TimedOut {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            store.get_process(process.id)?.status,
+            crate::protocol::ProcessStatus::TimedOut
+        );
+
+        // TERM is ignored; the escalation must still end the group.
+        for _ in 0..800 {
+            if !crate::terminate::group_alive(pid) {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !crate::terminate::group_alive(pid),
+            "timed-out process survived escalation"
+        );
+
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn daemon_can_set_and_clear_timeout() -> Result<()> {
         let dir = tempdir()?;

@@ -180,6 +180,11 @@ signal that actually worked.
 `restart` also replaces a lost-but-alive generation: like `stop`, it is
 explicit intent. Stopping a finished process is an error, not a no-op.
 
+Timeouts use the same primitive with the default grace, detached from the
+timeout bookkeeping task — `finish_process` aborts that task (its own
+cleanup does, and so does the reaper when any group member exits), and
+the escalation must survive both to end the whole group.
+
 Before signaling a *lost* row, the stored pid is verified against the
 pid identity token; on mismatch (the pid was recycled since the row was
 recorded) nothing is signaled and the row is simply marked killed.

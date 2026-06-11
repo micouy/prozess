@@ -351,12 +351,20 @@ impl Service {
             tokio::time::sleep(Duration::from_millis(timeout.duration_ms)).await;
 
             if let Some(process) = state.process(id) {
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(-(process.pgid as i32)),
-                    nix::sys::signal::Signal::SIGTERM,
-                );
+                // Marked first so the reaper records timed_out, not exited.
                 let _ = store.mark_process_timed_out(id);
                 state.finish_process(id, None);
+                // Detached: finish_process (ours above, or the reaper's
+                // when a group member exits) aborts this timeout task, and
+                // the escalation must survive that to kill the whole group.
+                tokio::spawn(async move {
+                    let _ = crate::terminate::kill_group_confirmed(
+                        process.pgid,
+                        false,
+                        crate::terminate::DEFAULT_GRACE,
+                    )
+                    .await;
+                });
             }
         });
         self.state.set_timeout(id, Some(timeout));
