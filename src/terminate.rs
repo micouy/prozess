@@ -31,7 +31,7 @@ pub async fn kill_group_confirmed(pgid: u32, force: bool, grace: Duration) -> Re
             }
         }
 
-        if wait_until_dead(group, grace).await {
+        if wait_until_dead(pgid, grace).await {
             return Ok(StopSignal::Term);
         }
     }
@@ -44,18 +44,18 @@ pub async fn kill_group_confirmed(pgid: u32, force: bool, grace: Duration) -> Re
         }
     }
 
-    if wait_until_dead(group, KILL_DEADLINE).await {
+    if wait_until_dead(pgid, KILL_DEADLINE).await {
         return Ok(StopSignal::Kill);
     }
 
     bail!("process group {pgid} did not exit after SIGKILL")
 }
 
-async fn wait_until_dead(group: Pid, budget: Duration) -> bool {
+async fn wait_until_dead(pgid: u32, budget: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + budget;
 
     loop {
-        if !group_alive(group) {
+        if !group_alive(pgid) {
             return true;
         }
 
@@ -78,12 +78,13 @@ async fn wait_until_dead(group: Pid, budget: Duration) -> bool {
 // "all privileged" (a setuid child, e.g. via sudo), so a group we could
 // never kill anyway is reported dead rather than erroring as on Linux.
 #[cfg(target_os = "linux")]
-fn group_alive(group: Pid) -> bool {
+pub fn group_alive(pgid: u32) -> bool {
+    let group = Pid::from_raw(-(pgid as i32));
     if kill(group, None).is_err() {
         return false;
     }
 
-    let pgid = group.as_raw().unsigned_abs().to_string();
+    let pgid = pgid.to_string();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return true;
     };
@@ -114,7 +115,8 @@ fn group_alive(group: Pid) -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn group_alive(group: Pid) -> bool {
+pub fn group_alive(pgid: u32) -> bool {
+    let group = Pid::from_raw(-(pgid as i32));
     !matches!(kill(group, None), Err(Errno::ESRCH | Errno::EPERM))
 }
 
@@ -217,7 +219,7 @@ mod tests {
         assert!(matches!(signal?, StopSignal::Kill));
         // The grandchild may linger as a zombie until init reaps it; use
         // the same liveness definition as the primitive.
-        assert!(!group_alive(Pid::from_raw(-(pgid as i32))));
+        assert!(!group_alive(pgid));
 
         Ok(())
     }

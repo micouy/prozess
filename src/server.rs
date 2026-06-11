@@ -643,9 +643,9 @@ mod tests {
             matches!(response, Response::StoppedProcess { id, signal: StopSignal::Kill } if id == process.id),
             "expected escalation to SIGKILL, got {response:?}"
         );
-        // The response means confirmed death; allow a beat for the
-        // zombie to be reaped before the pid stops being listed.
-        assert_dead_soon(pid).await?;
+        // The response means confirmed death, immediately assertable
+        // with the same liveness definition the primitive uses.
+        assert!(!crate::terminate::group_alive(pid));
 
         let store = Store::open(StoreConfig {
             database_path: database,
@@ -690,7 +690,7 @@ mod tests {
             bail!("expected spawned response");
         };
         // The old generation must be dead before its successor spawns.
-        assert_dead_soon(old_pid).await?;
+        assert!(!crate::terminate::group_alive(old_pid));
         assert_ne!(new.pid, old.pid);
 
         client
@@ -1337,20 +1337,6 @@ mod tests {
         server.await??;
 
         Ok(())
-    }
-
-    /// The process is confirmed dead but may be listed as a zombie until
-    /// the reaper task waits on it.
-    async fn assert_dead_soon(pid: u32) -> Result<()> {
-        for _ in 0..100 {
-            if !crate::pid_identity::is_alive(pid, None) {
-                return Ok(());
-            }
-
-            sleep(Duration::from_millis(10)).await;
-        }
-
-        bail!("pid {pid} is still alive")
     }
 
     fn test_run_spec(command: Vec<String>, cwd: &Path) -> RunSpec {
