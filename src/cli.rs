@@ -85,6 +85,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub name: Option<String>,
 
+    /// If the name is already held by a live process, kill it (confirmed)
+    /// and take over the name.
+    #[arg(long, requires = "name")]
+    pub replace: bool,
+
     /// Working directory for the process. Defaults to the current directory.
     #[arg(long)]
     pub cwd: Option<PathBuf>,

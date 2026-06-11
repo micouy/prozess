@@ -211,6 +211,7 @@ fn run_spec(args: RunArgs) -> Result<RunSpec> {
 
     Ok(RunSpec {
         name: args.name,
+        replace: args.replace,
         timeout_ms: args.timeout.as_deref().map(parse_duration_ms).transpose()?,
         command: args.command,
         cwd: cwd.display().to_string(),

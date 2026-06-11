@@ -113,7 +113,9 @@ impl Store {
                 if error.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
                 let name = name.unwrap_or("?");
-                anyhow::bail!("a running process named {name:?} already exists")
+                anyhow::bail!(
+                    "a running process named {name:?} already exists; pass --replace to take over the name"
+                )
             }
             Err(error) => Err(error).context("failed to reserve process"),
         }
@@ -159,26 +161,41 @@ impl Store {
         Ok(())
     }
 
-    /// `(pid, pid_started_at)` of every lost generation of `name` that
+    /// `(id, pid, pid_started_at)` of every lost generation of `name` that
     /// still has a recorded pid, newest first.
-    pub fn lost_generations(&self, name: &str) -> Result<Vec<(u32, Option<i64>)>> {
+    pub fn lost_generations(&self, name: &str) -> Result<Vec<(i64, u32, Option<i64>)>> {
         let connection = self.connect()?;
         let mut statement = connection
             .prepare(
                 "
-                SELECT pid, pid_started_at FROM processes
+                SELECT id, pid, pid_started_at FROM processes
                 WHERE name = ?1 AND status = 'lost' AND pid IS NOT NULL
                 ORDER BY id DESC
                 ",
             )
             .context("failed to prepare lost generations query")?;
         let generations = statement
-            .query_map([name], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map([name], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .context("failed to query lost generations")?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to decode lost generations")?;
 
         Ok(generations)
+    }
+
+    pub fn find_running_by_name(&self, name: &str) -> Result<Option<i64>> {
+        use rusqlite::OptionalExtension;
+
+        let connection = self.connect()?;
+
+        connection
+            .query_row(
+                "SELECT id FROM processes WHERE name = ?1 AND status = 'running'",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to look up running process by name")
     }
 
     pub fn mark_process_finished(&self, id: i64, exit_code: Option<i32>) -> Result<()> {
@@ -336,6 +353,7 @@ impl Store {
 
         Ok(RunSpec {
             name: details.name,
+            replace: false,
             timeout_ms: details.timeout_ms,
             command: details.command,
             cwd: details.cwd,
@@ -1090,10 +1108,12 @@ mod tests {
         let second =
             store.insert_process(Some("api"), &command, dir.path(), 200, 200, false, &[], &[])?;
         store.mark_running_processes_lost()?;
-        let _ = (first, second);
 
         let generations = store.lost_generations("api")?;
-        assert_eq!(generations, vec![(200, None), (100, None)]);
+        assert_eq!(
+            generations,
+            vec![(second.id, 200, None), (first.id, 100, None)]
+        );
         assert!(store.lost_generations("other")?.is_empty());
 
         Ok(())
