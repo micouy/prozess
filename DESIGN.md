@@ -7,6 +7,7 @@ invalidates a decision must update this file in the same PR.
 
 - [Architecture](#architecture)
   - [The daemon owns processes; the CLI is one client](#the-daemon-owns-processes-the-cli-is-one-client)
+  - [Actions live in the daemon; observation loops live in the client](#actions-live-in-the-daemon-observation-loops-live-in-the-client)
   - [SQLite is the registry and the log store](#sqlite-is-the-registry-and-the-log-store)
   - [Schema changes are numbered migrations](#schema-changes-are-numbered-migrations)
   - [IPC is one request, one response per connection](#ipc-is-one-request-one-response-per-connection)
@@ -33,6 +34,21 @@ Anything that must be correct under concurrency (name uniqueness, spawn,
 kill) is decided inside the daemon against its registry — never by
 check-then-act sequences in clients.
 
+### Actions live in the daemon; observation loops live in the client
+
+The daemon owns facts and actions: spawning, killing, the registry, log
+storage, and env resolution. The client owns presentation and observation
+loops: formatting, argument and config defaults, and polling against
+daemon cursors (`logs -f` is a client loop over the daemon's "chunks
+after cursor X" primitive).
+
+A request may hold its connection open in exactly two cases: the daemon
+is doing the work itself (a confirmed stop killing a group — the response
+reports its outcome), or it is observing its own child (`wait`, where
+only the daemon learns of the exit directly; a client could merely poll
+an approximation). Waiting for anything else is a client polling loop,
+not a blocking request.
+
 ### SQLite is the registry and the log store
 
 Process state and captured output live in one SQLite database (WAL mode).
@@ -53,13 +69,12 @@ per-connection and `journal_mode` cannot change inside a transaction.
 ### IPC is one request, one response per connection
 
 The Unix-socket protocol is a single JSON request followed by a single JSON
-response, then the connection closes. There is no streaming. Follow-style
-commands are implemented by client polling with cursors. Connections are
-handled concurrently — some requests legitimately block for a long time
-(`wait`, confirmed stops) and must not stall other clients — which is safe
-because cross-request invariants live in the database (e.g. the unique
-index on running names), not in handler ordering. If real-time push is
-ever needed, the protocol gets redesigned then, and the polling queries
+response, then the connection closes. There is no streaming. Connections
+are handled concurrently — blocking requests (`wait`, confirmed stops; see
+the daemon/client split above) must not stall other clients — which is
+safe because cross-request invariants live in the database (e.g. the
+unique index on running names), not in handler ordering. If real-time push
+is ever needed, the protocol gets redesigned then, and the polling queries
 become the backfill path.
 
 ### Runtime directory is keyed by uid
