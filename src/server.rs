@@ -103,12 +103,29 @@ pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> R
     println!("pz daemon listening");
     println!("socket: {}", socket_path.display());
 
-    loop {
-        let (stream, _) = listener.accept().await.context("failed to accept client")?;
-        let should_stop = handle_connection(stream, &service).await?;
+    // Connections are handled concurrently: some requests legitimately
+    // block for a long time (`wait`), and they must not stall other
+    // clients.
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        if should_stop {
-            break;
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => break,
+            accepted = listener.accept() => {
+                let (stream, _) = accepted.context("failed to accept client")?;
+                let service = service.clone();
+                let shutdown_tx = shutdown_tx.clone();
+
+                tokio::spawn(async move {
+                    match handle_connection(stream, &service).await {
+                        Ok(true) => {
+                            let _ = shutdown_tx.send(()).await;
+                        }
+                        Ok(false) => {}
+                        Err(error) => eprintln!("client connection failed: {error}"),
+                    }
+                });
+            }
         }
     }
 

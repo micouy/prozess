@@ -77,6 +77,52 @@ fn config_env_is_applied_at_spawn_and_restartable() -> Result<()> {
 }
 
 #[test]
+fn wait_does_not_block_other_clients() -> Result<()> {
+    use std::time::Instant;
+
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "slow", "--", "/bin/sleep", "10"],
+    )?;
+
+    let mut wait = Command::new(&binary)
+        .args(["wait", "slow"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .context("failed to spawn pz wait")?;
+    sleep(Duration::from_millis(300));
+
+    let started = Instant::now();
+    run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "ps blocked behind wait for {elapsed:?}"
+    );
+
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["stop", "slow", "--force"],
+    )?;
+    wait.wait().context("failed to reap pz wait")?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn daemon_start_runs_in_background() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;

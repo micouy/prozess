@@ -54,10 +54,13 @@ per-connection and `journal_mode` cannot change inside a transaction.
 
 The Unix-socket protocol is a single JSON request followed by a single JSON
 response, then the connection closes. There is no streaming. Follow-style
-commands are implemented by client polling with cursors. This keeps the
-daemon's accept loop simple; if real-time push is ever needed, the protocol
-gets redesigned then (framed, concurrent connections), and the polling
-queries become the backfill path.
+commands are implemented by client polling with cursors. Connections are
+handled concurrently — some requests legitimately block for a long time
+(`wait`, confirmed stops) and must not stall other clients — which is safe
+because cross-request invariants live in the database (e.g. the unique
+index on running names), not in handler ordering. If real-time push is
+ever needed, the protocol gets redesigned then, and the polling queries
+become the backfill path.
 
 ### Runtime directory is keyed by uid
 
