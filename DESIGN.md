@@ -16,6 +16,7 @@ invalidates a decision must update this file in the same PR.
   - [Commands are spawned directly, in their own process group](#commands-are-spawned-directly-in-their-own-process-group)
   - [Empty environment by default; env values are never stored](#empty-environment-by-default-env-values-are-never-stored)
   - [A name has at most one live generation](#a-name-has-at-most-one-live-generation)
+  - [Dead means no group member can ever run again](#dead-means-no-group-member-can-ever-run-again)
   - [The daemon never kills processes at startup; lost stays lost](#the-daemon-never-kills-processes-at-startup-lost-stays-lost)
   - [Pid liveness checks require an identity token](#pid-liveness-checks-require-an-identity-token)
 - [Logs](#logs)
@@ -118,6 +119,50 @@ to debug than any error. Enforcement is atomic in the daemon: the name is
 reserved as a row *before* the child is spawned, backed by a partial
 unique index on running names, so a conflict can never leak an untracked
 child. Failed and dead generations do not block the name.
+
+### Dead means no group member can ever run again
+
+Killing decisions need one canonical liveness definition, used both by
+the kill path and by tests (a test asserting stricter semantics than the
+code is a bug we have shipped). The definition serves one guarantee: when
+a process group is reported dead, none of its members runs code or holds
+ports, so a successor can safely take its place.
+
+A group is **dead** when it has no member that could ever run again:
+either no members remain, or every remaining member is a zombie. Zombies
+count as dead deliberately — a zombie has already exited and released its
+file descriptors and ports; only its pid-table entry lingers until the
+parent (the daemon's reaper, or init for orphans) collects it.
+
+The platforms report this differently, so the check is platform-split:
+
+- `kill(-pgid, 0)` returning `ESRCH` means dead everywhere.
+- **macOS** reports `EPERM` for a group whose members are all zombies.
+  `EPERM` also covers a pgid recycled to another user — which must never
+  be signaled again — so `EPERM` counts as dead.
+- **Linux** delivers signals to zombies "successfully", so a successful
+  `kill(-pgid, 0)` proves nothing there; member states are read from
+  `/proc/<pid>/stat` instead, and only a member in a non-`Z` state counts
+  as alive.
+
+Accepted limitations:
+
+1. **macOS cannot distinguish "all zombies" from "all privileged".** A
+   group reduced to setuid members (e.g. a child run via `sudo`) reports
+   dead, although the process still runs. Linux, whose `/proc` states are
+   world-readable, instead times out and errors honestly. The
+   inconsistency is accepted: pz could never signal such a process on
+   either platform, and macOS offers no cheap, reliable way to enumerate
+   another user's group membership.
+2. **Pgid recycling between signal and confirmation** would direct the
+   SIGKILL escalation at an innocent group. This requires a full
+   pid-space wraparound inside the grace window (seconds) and is treated
+   as negligible. The realistic version of the risk — signaling a
+   *stale* pgid from an hours-old lost row — must be guarded by the
+   caller with the pid identity token before any signal is sent.
+3. **Escapees are invisible by design.** A child that calls `setsid` (or
+   double-forks) leaves the group; the group being dead says nothing
+   about it. The process group is pz's containment boundary.
 
 ### The daemon never kills processes at startup; lost stays lost
 
