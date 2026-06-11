@@ -103,9 +103,6 @@ pub async fn start_with_paths(socket_path: PathBuf, database_path: PathBuf) -> R
     println!("pz daemon listening");
     println!("socket: {}", socket_path.display());
 
-    // Connections are handled concurrently: some requests legitimately
-    // block for a long time (`wait`), and they must not stall other
-    // clients.
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     loop {
