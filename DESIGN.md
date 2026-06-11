@@ -24,6 +24,7 @@ invalidates a decision must update this file in the same PR.
   - [Log storage and cursors](#log-storage-and-cursors)
   - [Tail and follow](#tail-and-follow)
 - [CLI Behavior](#cli-behavior)
+  - [Process listing](#process-listing)
   - [Broken pipe handling](#broken-pipe-handling)
 
 ## Architecture
@@ -235,6 +236,16 @@ parsed flag is a bug; combinations that cannot work (`-f --until`) are
 rejected.
 
 ## CLI Behavior
+
+### Process listing
+
+`pz ps` shows live processes by default — running, plus lost rows whose
+pid still matches its identity token. A lost-but-alive process may hold
+ports and is exactly what needs attention; a lost-but-dead one is history
+with an unknown exit code and only appears under `--all`, like other
+finished rows. The filter is a daemon-side query (the registry grows
+without bound, so finished history is never loaded or shipped for the
+default view, and the liveness facts live in the daemon).
 
 ### Broken pipe handling
 

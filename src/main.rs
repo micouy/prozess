@@ -86,7 +86,11 @@ async fn main() -> Result<()> {
                 })
                 .await,
         ),
-        Command::Ps => print_response(Client::new().send(Request::ListProcesses).await),
+        Command::Ps(args) => print_response(
+            Client::new()
+                .send(Request::ListProcesses { all: args.all })
+                .await,
+        ),
         Command::Show { process } => print_response(
             Client::new()
                 .send(Request::ShowProcess {

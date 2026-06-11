@@ -31,7 +31,10 @@ pub enum Request {
     Ports {
         selector: ProcessSelector,
     },
-    ListProcesses,
+    ListProcesses {
+        /// When false, only running and lost-but-alive processes.
+        all: bool,
+    },
     ShowProcess {
         selector: ProcessSelector,
     },
@@ -88,7 +91,7 @@ impl Request {
             Self::RestartProcess { .. } => "restart",
             Self::Resources { .. } => "resources",
             Self::Ports { .. } => "ports",
-            Self::ListProcesses => "ps",
+            Self::ListProcesses { .. } => "ps",
             Self::ShowProcess { .. } => "show",
             Self::ReadLogs { .. } => "logs",
         }

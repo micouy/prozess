@@ -190,6 +190,80 @@ fn wait_does_not_block_other_clients() -> Result<()> {
 }
 
 #[test]
+fn ps_hides_finished_processes_unless_all() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "gone", "--", "/bin/echo", "bye"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["wait", "gone"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "alive", "--", "/bin/sleep", "30"],
+    )?;
+
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+    let stdout = String::from_utf8(ps.stdout)?;
+    assert!(stdout.contains("alive"), "{stdout}");
+    assert!(!stdout.contains("gone"), "{stdout}");
+
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps", "--all"])?;
+    let stdout = String::from_utf8(ps.stdout)?;
+    assert!(stdout.contains("alive"), "{stdout}");
+    assert!(stdout.contains("gone"), "{stdout}");
+
+    // Lost processes may still be alive and hold ports: visible by default.
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+    let stdout = String::from_utf8(ps.stdout)?;
+    assert!(stdout.contains("alive"), "{stdout}");
+    assert!(stdout.contains("lost"), "{stdout}");
+
+    // Once the orphan dies, the lost row is history: hidden by default,
+    // still in --all.
+    let show = run_pz(&binary, &runtime_dir, &state_dir, &["show", "alive"])?;
+    let pid = String::from_utf8(show.stdout)?
+        .lines()
+        .find_map(|line| line.strip_prefix("pid: ").map(str::to_owned))
+        .context("show should print a pid")?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--", "/bin/kill", "-9", &pid],
+    )?;
+    for _ in 0..100 {
+        let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+        if !String::from_utf8(ps.stdout)?.contains("alive") {
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+    assert!(!String::from_utf8(ps.stdout)?.contains("alive"));
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps", "--all"])?;
+    let stdout = String::from_utf8(ps.stdout)?;
+    assert!(stdout.contains("alive"), "{stdout}");
+    assert!(stdout.contains("lost"), "{stdout}");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn daemon_start_runs_in_background() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;
