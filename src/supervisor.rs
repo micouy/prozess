@@ -35,6 +35,21 @@ impl Supervisor {
             .iter()
             .map(|env| env.key.clone())
             .collect::<Vec<_>>();
+
+        if let Some(name) = spec.name.as_deref() {
+            ensure_name_not_lost_alive(&store, name)?;
+        }
+        // Reserved before spawning: a name conflict must fail while there
+        // is still nothing to leak.
+        let process_id = store.reserve_process(
+            spec.name.as_deref(),
+            &spec.command,
+            &cwd,
+            spec.inherit_env,
+            &spec.env_files,
+            &env_keys,
+        )?;
+
         let mut command = Command::new(program);
         command
             .args(args)
@@ -46,42 +61,28 @@ impl Supervisor {
             .stderr(Stdio::piped())
             .process_group(0);
 
-        let spawn_result = command.spawn();
-        let mut child = match spawn_result {
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 let message = format!("failed to spawn {}: {error}", spec.command.join(" "));
-                let _ = store.insert_failed_process(
-                    spec.name.as_deref(),
-                    &spec.command,
-                    &cwd,
-                    &message,
-                    spec.inherit_env,
-                    &spec.env_files,
-                    &env_keys,
-                );
+                let _ = store.mark_spawn_failed(process_id, &message);
                 bail!(message);
             }
         };
-        let pid = child.id().context("spawned process did not expose a pid")?;
+        let pid = match child.id() {
+            Some(pid) => pid,
+            None => {
+                let message = "spawned process did not expose a pid";
+                let _ = store.mark_spawn_failed(process_id, message);
+                bail!(message);
+            }
+        };
         // Captured immediately so later liveness checks can tell this
         // process apart from an unrelated one that recycled its pid.
         let pid_started_at = crate::pid_identity::current_token(pid);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let process = store.insert_process_with_timeout(
-            spec.name.as_deref(),
-            &spec.command,
-            &cwd,
-            pid,
-            pid,
-            pid_started_at,
-            spec.inherit_env,
-            &spec.env_files,
-            &env_keys,
-            None,
-        )?;
-        let process_id = process.id;
+        let process = store.activate_process(process_id, pid, pid, pid_started_at)?;
         let state = self.state.clone();
 
         state.insert_process(RuntimeProcessMetadata {
@@ -120,6 +121,19 @@ impl Supervisor {
 
         Ok(process)
     }
+}
+
+fn ensure_name_not_lost_alive(store: &Store, name: &str) -> Result<()> {
+    for (pid, token) in store.lost_generations(name)? {
+        if crate::pid_identity::is_alive(pid, token) {
+            bail!(
+                "process {name:?} is lost but still running (pid {pid}); \
+                 stop it with `pz stop {name}` before reusing the name"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn effective_env(spec: &RunSpec) -> Result<BTreeMap<String, String>> {

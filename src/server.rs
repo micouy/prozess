@@ -1006,6 +1006,117 @@ mod tests {
         bail!("daemon socket was not created at {}", socket.display())
     }
 
+    #[tokio::test]
+    async fn daemon_rejects_duplicate_running_name_without_leaking() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/bin/sleep".to_owned(), "5".to_owned()], dir.path());
+        spec.name = Some("api".to_owned());
+        let Response::Spawned(_) = client.send(Request::Spawn { spec: spec.clone() }).await? else {
+            bail!("expected spawned response");
+        };
+
+        let Response::Error { message } = client.send(Request::Spawn { spec }).await? else {
+            bail!("expected error response");
+        };
+        assert!(
+            message.contains("a running process named \"api\" already exists"),
+            "{message}"
+        );
+
+        // The conflict happened before anything spawned: exactly one row.
+        let Response::ProcessList(processes) = client.send(Request::ListProcesses).await? else {
+            bail!("expected process list");
+        };
+        assert_eq!(processes.len(), 1);
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Name("api".to_owned()),
+                force: true,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_rejects_name_of_lost_but_alive_process() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+
+        // A stand-in for the orphan of a previous daemon generation.
+        let mut orphan = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .context("failed to spawn orphan")?;
+        let orphan_pid = orphan.id();
+        let token = crate::pid_identity::current_token(orphan_pid);
+        assert!(token.is_some());
+
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        let id = store.reserve_process(
+            Some("api"),
+            &["/bin/sleep".to_owned(), "30".to_owned()],
+            dir.path(),
+            false,
+            &[],
+            &[],
+        )?;
+        store.activate_process(id, orphan_pid, orphan_pid, token)?;
+
+        // Daemon startup marks it lost.
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/bin/sleep".to_owned(), "5".to_owned()], dir.path());
+        spec.name = Some("api".to_owned());
+        let Response::Error { message } =
+            client.send(Request::Spawn { spec: spec.clone() }).await?
+        else {
+            bail!("expected error response");
+        };
+        assert!(message.contains("lost but still running"), "{message}");
+        assert!(message.contains(&orphan_pid.to_string()), "{message}");
+
+        // Once the orphan dies the name is free again.
+        orphan.kill().context("failed to kill orphan")?;
+        orphan.wait().context("failed to reap orphan")?;
+        let Response::Spawned(process) = client.send(Request::Spawn { spec }).await? else {
+            bail!("expected spawned response");
+        };
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: true,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
     fn test_run_spec(command: Vec<String>, cwd: &Path) -> RunSpec {
         RunSpec {
             name: None,

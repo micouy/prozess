@@ -118,6 +118,62 @@ fn daemon_start_reports_startup_failure_cause() -> Result<()> {
 }
 
 #[test]
+fn run_rejects_name_conflicts_until_previous_generation_dies() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+    let run_failing = |args: &[&str]| -> Result<String> {
+        let output = Command::new(&binary)
+            .args(args)
+            .env("PZ_RUNTIME_DIR", runtime_dir.path())
+            .env("PZ_STATE_DIR", state_dir.path())
+            .output()
+            .context("failed to run pz")?;
+        assert!(!output.status.success(), "pz {args:?} should fail");
+        Ok(String::from_utf8(output.stderr)?)
+    };
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "svc", "--", "/bin/sleep", "30"],
+    )?;
+
+    let stderr = run_failing(&["run", "--name", "svc", "--", "/bin/sleep", "30"])?;
+    assert!(stderr.contains("already exists"), "{stderr}");
+
+    // Daemon restart orphans the process but keeps it alive: the name
+    // must stay blocked.
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+
+    let stderr = run_failing(&["run", "--name", "svc", "--", "/bin/sleep", "30"])?;
+    assert!(stderr.contains("lost but still running"), "{stderr}");
+
+    // pz stop works on the lost generation, freeing the name.
+    run_pz(&binary, &runtime_dir, &state_dir, &["stop", "svc"])?;
+    for _ in 0..100 {
+        let retry = Command::new(&binary)
+            .args(["run", "--name", "svc", "--", "/bin/echo", "revived"])
+            .env("PZ_RUNTIME_DIR", runtime_dir.path())
+            .env("PZ_STATE_DIR", state_dir.path())
+            .output()
+            .context("failed to run pz")?;
+        if retry.status.success() {
+            run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+            wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+            return Ok(());
+        }
+        sleep(Duration::from_millis(50));
+    }
+
+    bail!("name was never freed after stopping the lost process")
+}
+
+#[test]
 fn logs_follow_prints_output_and_exits() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;
