@@ -114,9 +114,14 @@ pub struct RunArgs {
 pub struct StopArgs {
     pub process: String,
 
-    /// Send SIGKILL instead of SIGTERM.
+    /// Send SIGKILL immediately instead of SIGTERM first.
     #[arg(short, long)]
     pub force: bool,
+
+    /// Time SIGTERM gets before escalating to SIGKILL, e.g. 10s, 1m.
+    /// Defaults to 5s.
+    #[arg(long, conflicts_with = "force")]
+    pub grace: Option<String>,
 }
 
 #[derive(Debug, Args)]

@@ -11,9 +11,6 @@ use nix::{
 
 use crate::protocol::StopSignal;
 
-// TODO: consumed by confirmed stop/restart and timeout escalation;
-// remove the allows once those land.
-#[allow(dead_code)]
 pub const DEFAULT_GRACE: Duration = Duration::from_secs(5);
 /// How long SIGKILL gets before we give up; only exceeded by unkillable
 /// (e.g. uninterruptible-sleep) processes.
@@ -22,7 +19,6 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Kills the process group and returns only once every member is confirmed
 /// gone. `force` skips straight to SIGKILL. Returns the signal that did it.
-#[allow(dead_code)]
 pub async fn kill_group_confirmed(pgid: u32, force: bool, grace: Duration) -> Result<StopSignal> {
     let group = Pid::from_raw(-(pgid as i32));
 

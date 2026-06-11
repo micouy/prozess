@@ -12,6 +12,8 @@ pub enum Request {
     StopProcess {
         selector: ProcessSelector,
         force: bool,
+        /// Time SIGTERM gets before escalating to SIGKILL; None = default.
+        grace_ms: Option<u64>,
     },
     SetTimeout {
         selector: ProcessSelector,
