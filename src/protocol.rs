@@ -39,7 +39,8 @@ pub enum Request {
         selector: ProcessSelector,
     },
     ReadLogs {
-        selector: ProcessSelector,
+        /// None reads across every process.
+        selector: Option<ProcessSelector>,
         stream: OutputStream,
         after_id: Option<i64>,
         since_ms: Option<i64>,
@@ -146,6 +147,7 @@ pub enum OutputStream {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputChunk {
     pub id: i64,
+    pub process_id: i64,
     pub stream: OutputStream,
     pub data: Vec<u8>,
 }

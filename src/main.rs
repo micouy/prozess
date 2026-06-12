@@ -99,25 +99,37 @@ async fn main() -> Result<()> {
                 .await,
         ),
         Command::Logs(args) => {
-            let selector = process_selector(&args.process);
+            let selector = args.process.as_deref().map(process_selector);
             let stream = args.channel.into();
             let since_ms = cutoff_ms(args.since.as_deref())?;
+            let mut printer = if args.all {
+                OutputPrinter::prefixed()
+            } else {
+                OutputPrinter::raw()
+            };
 
             if args.follow {
-                follow_logs(selector, stream, args.tail, since_ms).await
+                follow_logs(selector, stream, args.tail, since_ms, args.all, printer).await
             } else {
-                print_logs_response(
-                    Client::new()
-                        .send(Request::ReadLogs {
-                            selector,
-                            stream,
-                            after_id: None,
-                            since_ms,
-                            until_ms: cutoff_ms(args.until.as_deref())?,
-                            tail_lines: args.tail.map(|tail| tail as u64),
-                        })
-                        .await,
-                )
+                match Client::new()
+                    .send(Request::ReadLogs {
+                        selector,
+                        stream,
+                        after_id: None,
+                        since_ms,
+                        until_ms: cutoff_ms(args.until.as_deref())?,
+                        tail_lines: args.tail.map(|tail| tail as u64),
+                    })
+                    .await?
+                {
+                    Response::Output { chunks, .. } => {
+                        printer.print(&chunks).await?;
+                        printer.flush_partial_lines()?;
+                        Ok(())
+                    }
+                    Response::Error { message } => bail!(message),
+                    _ => bail!("daemon returned an unexpected logs response"),
+                }
             }
         }
     }
@@ -301,10 +313,12 @@ fn parse_env_var(value: &str) -> Result<EnvVar> {
 }
 
 async fn follow_logs(
-    selector: ProcessSelector,
+    selector: Option<ProcessSelector>,
     stream: OutputStream,
     tail_lines: Option<usize>,
     since_ms: Option<i64>,
+    all: bool,
+    mut printer: OutputPrinter,
 ) -> Result<()> {
     let client = Client::new();
     let mut after_id = None;
@@ -332,34 +346,134 @@ async fn follow_logs(
             _ => bail!("daemon returned an unexpected logs response"),
         };
         let printed_any = !chunks.is_empty();
-        print_output(&chunks)?;
+        printer.print(&chunks).await?;
         after_id = Some(resume_after_id);
 
-        let is_running = match client
-            .send(Request::ShowProcess {
-                selector: selector.clone(),
-            })
-            .await?
-        {
-            Response::ProcessDetails(process) => process.status == ProcessStatus::Running,
-            Response::Error { message } => bail!(message),
-            _ => bail!("daemon returned an unexpected process response"),
-        };
+        // Following everything has no exit condition: new processes can
+        // appear at any time. Runs until interrupted.
+        if !all {
+            let selector = selector.clone().context("missing process selector")?;
+            let is_running = match client.send(Request::ShowProcess { selector }).await? {
+                Response::ProcessDetails(process) => process.status == ProcessStatus::Running,
+                Response::Error { message } => bail!(message),
+                _ => bail!("daemon returned an unexpected process response"),
+            };
 
-        if is_running || printed_any {
-            quiet_polls_after_exit = 0;
-        } else {
-            quiet_polls_after_exit += 1;
-        }
+            if is_running || printed_any {
+                quiet_polls_after_exit = 0;
+            } else {
+                quiet_polls_after_exit += 1;
+            }
 
-        if !is_running && quiet_polls_after_exit >= 3 {
-            break;
+            if !is_running && quiet_polls_after_exit >= 3 {
+                break;
+            }
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
+    printer.flush_partial_lines()?;
+
     Ok(())
+}
+
+/// Prints chunks either raw (single-process mode) or line-buffered with a
+/// `name | ` prefix (all-processes mode), where buffering prevents a chunk
+/// ending mid-line from gluing another process's prefix onto its tail.
+struct OutputPrinter {
+    prefixed: bool,
+    labels: std::collections::HashMap<i64, String>,
+    pending: std::collections::HashMap<i64, Vec<u8>>,
+}
+
+impl OutputPrinter {
+    fn raw() -> Self {
+        Self {
+            prefixed: false,
+            labels: Default::default(),
+            pending: Default::default(),
+        }
+    }
+
+    fn prefixed() -> Self {
+        Self {
+            prefixed: true,
+            ..Self::raw()
+        }
+    }
+
+    async fn print(&mut self, chunks: &[OutputChunk]) -> Result<()> {
+        if !self.prefixed {
+            return print_output(chunks);
+        }
+
+        let mut stdout = std::io::stdout().lock();
+
+        for chunk in chunks {
+            let label = self.label(chunk.process_id).await?;
+            let buffer = self.pending.entry(chunk.process_id).or_default();
+            buffer.extend_from_slice(&chunk.data);
+
+            while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
+                let line = buffer.drain(..=newline).collect::<Vec<_>>();
+                check_stdout_write(
+                    stdout.write_all(format!("{label} | ").as_bytes()),
+                    "failed to write output",
+                )?;
+                check_stdout_write(stdout.write_all(&line), "failed to write output")?;
+            }
+        }
+        check_stdout_write(stdout.flush(), "failed to flush output")?;
+
+        Ok(())
+    }
+
+    async fn label(&mut self, process_id: i64) -> Result<String> {
+        if let Some(label) = self.labels.get(&process_id) {
+            return Ok(label.clone());
+        }
+
+        let label = match Client::new()
+            .send(Request::ShowProcess {
+                selector: ProcessSelector::Id(process_id),
+            })
+            .await?
+        {
+            Response::ProcessDetails(process) => {
+                process.name.unwrap_or_else(|| format!("#{}", process.id))
+            }
+            _ => format!("#{process_id}"),
+        };
+        self.labels.insert(process_id, label.clone());
+
+        Ok(label)
+    }
+
+    fn flush_partial_lines(&mut self) -> Result<()> {
+        let mut stdout = std::io::stdout().lock();
+
+        for (process_id, buffer) in std::mem::take(&mut self.pending) {
+            if buffer.is_empty() {
+                continue;
+            }
+
+            let label = self
+                .labels
+                .get(&process_id)
+                .cloned()
+                .unwrap_or_else(|| format!("#{process_id}"));
+            check_stdout_write(
+                stdout.write_all(format!("{label} | ").as_bytes()),
+                "failed to write output",
+            )?;
+            check_stdout_write(stdout.write_all(&buffer), "failed to write output")?;
+            check_stdout_write(stdout.write_all(b"\n"), "failed to write output")?;
+        }
+        check_stdout_write(stdout.flush(), "failed to flush output")?;
+
+        Ok(())
+    }
 }
 
 fn print_response(response: Result<Response>) -> Result<()> {
@@ -407,18 +521,6 @@ fn print_response(response: Result<Response>) -> Result<()> {
             print_output(&chunks)?;
         }
         Response::Error { message } => bail!(message),
-    }
-
-    Ok(())
-}
-
-fn print_logs_response(response: Result<Response>) -> Result<()> {
-    match response? {
-        Response::Output { chunks, .. } => {
-            print_output(&chunks)?;
-        }
-        Response::Error { message } => bail!(message),
-        _ => bail!("daemon returned an unexpected logs response"),
     }
 
     Ok(())

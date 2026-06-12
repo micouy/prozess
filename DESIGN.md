@@ -23,6 +23,7 @@ invalidates a decision must update this file in the same PR.
 - [Logs](#logs)
   - [Log storage and cursors](#log-storage-and-cursors)
   - [Tail and follow](#tail-and-follow)
+  - [Following all processes](#following-all-processes)
 - [CLI Behavior](#cli-behavior)
   - [Process listing](#process-listing)
   - [Broken pipe handling](#broken-pipe-handling)
@@ -239,6 +240,19 @@ N` replays the last N lines then follows; `-f --tail 0` follows from now.
 Flags that are accepted must work in every mode — silently ignoring a
 parsed flag is a bug; combinations that cannot work (`-f --until`) are
 rejected.
+
+### Following all processes
+
+`pz logs --all` reads across every process: the same read request with the
+process filter dropped, possible because chunk ids are a single global
+cursor. It is a client polling loop per the daemon/client split — a
+daemon-stdout tee was rejected because the daemon's stdout is null except
+in foreground mode, and pushing would force a protocol redesign. The
+client prefixes each line with the process name (id when unnamed) and
+line-buffers per process, so a chunk ending mid-line cannot glue another
+process's prefix onto its tail. Interleaving order is insert order — one
+coherent timeline. Following everything has no exit condition; new
+processes simply start appearing.
 
 ## CLI Behavior
 

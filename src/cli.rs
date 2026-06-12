@@ -141,11 +141,17 @@ pub struct TimeoutArgs {
 
 #[derive(Debug, Args)]
 pub struct LogsArgs {
-    pub process: String,
+    #[arg(required_unless_present = "all")]
+    pub process: Option<String>,
 
     /// Output channel to show.
     #[arg(value_enum, default_value_t = LogStream::All)]
     pub channel: LogStream,
+
+    /// Follow output from every process, each line prefixed with the
+    /// process name. Conflicts with selecting a single process.
+    #[arg(long, conflicts_with_all = ["process", "channel"])]
+    pub all: bool,
 
     /// Continue printing new output as it arrives. Blocks until the process exits.
     #[arg(short, long)]

@@ -390,11 +390,12 @@ impl Store {
     }
 
     /// Returns matching chunks and the cursor to resume from (valid even
-    /// when nothing matched). `tail_lines` overrides `after_id`: only the
-    /// last N lines of the window are read (0 = none).
+    /// when nothing matched). `process_id: None` reads across every
+    /// process. `tail_lines` overrides `after_id`: only the last N lines
+    /// of the window are read (0 = none).
     pub fn read_output(
         &self,
-        process_id: i64,
+        process_id: Option<i64>,
         stream: OutputStream,
         after_id: Option<i64>,
         since_ms: Option<i64>,
@@ -414,9 +415,9 @@ impl Store {
         let (sql, stream_filter) = match stream {
             OutputStream::All => (
                 "
-                SELECT id, stream, chunk
+                SELECT id, process_id, stream, chunk
                 FROM process_output
-                WHERE process_id = ?1
+                WHERE (?1 IS NULL OR process_id = ?1)
                     AND id > ?2
                     AND (?3 IS NULL OR created_at_ms >= ?3)
                     AND (?4 IS NULL OR created_at_ms <= ?4)
@@ -426,9 +427,9 @@ impl Store {
             ),
             OutputStream::Stdout | OutputStream::Stderr => (
                 "
-                SELECT id, stream, chunk
+                SELECT id, process_id, stream, chunk
                 FROM process_output
-                WHERE process_id = ?1
+                WHERE (?1 IS NULL OR process_id = ?1)
                     AND id > ?2
                     AND (?3 IS NULL OR created_at_ms >= ?3)
                     AND (?4 IS NULL OR created_at_ms <= ?4)
@@ -537,7 +538,7 @@ fn stream_name(stream: OutputStream) -> &'static str {
 /// lines of the boundary chunk to slice off.
 fn seek_tail(
     connection: &Connection,
-    process_id: i64,
+    process_id: Option<i64>,
     stream: OutputStream,
     since_ms: Option<i64>,
     until_ms: Option<i64>,
@@ -548,7 +549,7 @@ fn seek_tail(
             "
             SELECT id, chunk
             FROM process_output
-            WHERE process_id = ?1
+            WHERE (?1 IS NULL OR process_id = ?1)
                 AND (?2 IS NULL OR created_at_ms >= ?2)
                 AND (?3 IS NULL OR created_at_ms <= ?3)
             ORDER BY id DESC
@@ -559,7 +560,7 @@ fn seek_tail(
             "
             SELECT id, chunk
             FROM process_output
-            WHERE process_id = ?1
+            WHERE (?1 IS NULL OR process_id = ?1)
                 AND (?2 IS NULL OR created_at_ms >= ?2)
                 AND (?3 IS NULL OR created_at_ms <= ?3)
                 AND stream = ?4
@@ -628,8 +629,9 @@ fn trim_leading_lines(data: &[u8], lines: u64) -> Vec<u8> {
 fn output_chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutputChunk> {
     Ok(OutputChunk {
         id: row.get(0)?,
-        stream: parse_stream(row.get::<_, String>(1)?.as_str()),
-        data: row.get(2)?,
+        process_id: row.get(1)?,
+        stream: parse_stream(row.get::<_, String>(2)?.as_str()),
+        data: row.get(3)?,
     })
 }
 
@@ -1306,7 +1308,7 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stderr, b"err\n")?;
 
         let (chunks, resume) =
-            store.read_output(process.id, OutputStream::All, None, None, None, None)?;
+            store.read_output(Some(process.id), OutputStream::All, None, None, None, None)?;
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].id, 1);
         assert_eq!(chunks[1].id, 2);
@@ -1314,19 +1316,37 @@ mod tests {
         assert_eq!(chunks[1].data, b"err\n");
         assert_eq!(resume, 2);
 
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::Stderr, None, None, None, None)?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::Stderr,
+            None,
+            None,
+            None,
+            None,
+        )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"err\n");
 
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, Some(1), None, None, None)?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            Some(1),
+            None,
+            None,
+            None,
+        )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].id, 2);
 
         // Nothing new: the resume cursor holds its position.
-        let (chunks, resume) =
-            store.read_output(process.id, OutputStream::All, Some(2), None, None, None)?;
+        let (chunks, resume) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            Some(2),
+            None,
+            None,
+            None,
+        )?;
         assert!(chunks.is_empty());
         assert_eq!(resume, 2);
 
@@ -1350,8 +1370,14 @@ mod tests {
             &[],
         )?;
 
-        let (chunks, resume) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(0))?;
+        let (chunks, resume) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(0),
+        )?;
         assert!(chunks.is_empty());
         assert_eq!(resume, 0);
 
@@ -1360,44 +1386,86 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"three\n")?;
 
         // tail 0: nothing replayed, cursor past the newest chunk.
-        let (chunks, resume) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(0))?;
+        let (chunks, resume) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(0),
+        )?;
         assert!(chunks.is_empty());
         assert_eq!(resume, 3);
 
-        let (chunks, resume) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
+        let (chunks, resume) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(1),
+        )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"three\n");
         assert_eq!(resume, 3);
 
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(2),
+        )?;
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].data, b"err\n");
         assert_eq!(chunks[1].data, b"three\n");
 
         // tail 3 ends mid-chunk: the boundary chunk is sliced on the line.
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(3))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(3),
+        )?;
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].data, b"two\n");
         assert_eq!(chunks[1].data, b"err\n");
         assert_eq!(chunks[2].data, b"three\n");
 
         // More lines than stored: everything, untouched.
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(10))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(10),
+        )?;
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].data, b"one\ntwo\n");
 
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::Stdout, None, None, None, Some(2))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::Stdout,
+            None,
+            None,
+            None,
+            Some(2),
+        )?;
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].data, b"two\n");
         assert_eq!(chunks[1].data, b"three\n");
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::Stderr, None, None, None, Some(1))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::Stderr,
+            None,
+            None,
+            None,
+            Some(1),
+        )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"err\n");
 
@@ -1425,13 +1493,25 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"partial")?;
 
         // "partial" has no newline but counts as the last line.
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(1),
+        )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"partial");
 
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(2),
+        )?;
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].data, b"one\n");
 
@@ -1459,24 +1539,42 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"aaa")?;
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"bbb\nccc\n")?;
 
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(2))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(2),
+        )?;
         let data = chunks
             .iter()
             .flat_map(|chunk| chunk.data.iter().copied())
             .collect::<Vec<_>>();
         assert_eq!(data, b"aaabbb\nccc\n");
 
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(1),
+        )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"ccc\n");
 
         // A line-aligned cut between chunks must not leave an empty
         // boundary chunk behind.
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"ddd\n")?;
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, None, Some(1))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            None,
+            Some(1),
+        )?;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, b"ddd\n");
 
@@ -1504,13 +1602,19 @@ mod tests {
         store.insert_output_chunk(process.id, OutputStream::Stdout, b"two\n")?;
 
         // until_ms before everything: the window is empty, tail finds nothing.
-        let (chunks, _) =
-            store.read_output(process.id, OutputStream::All, None, None, Some(0), Some(1))?;
+        let (chunks, _) = store.read_output(
+            Some(process.id),
+            OutputStream::All,
+            None,
+            None,
+            Some(0),
+            Some(1),
+        )?;
         assert!(chunks.is_empty());
 
         let now = now_ms()?;
         let (chunks, _) = store.read_output(
-            process.id,
+            Some(process.id),
             OutputStream::All,
             None,
             Some(0),

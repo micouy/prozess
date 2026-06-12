@@ -48,6 +48,7 @@ pz show api
 pz logs api -f
 pz logs api --tail 50
 pz logs api -f --tail 0   # follow new output only, no replay
+pz logs --all -f          # mirror every process, lines prefixed with names
 pz stop api
 pz stop api --force
 pz stop api --grace 10s   # SIGTERM, wait, then SIGKILL; default grace is 5s
