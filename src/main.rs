@@ -3,6 +3,7 @@ mod client;
 mod config;
 mod daemon_state;
 mod pid_identity;
+mod ports;
 mod protocol;
 mod runtime;
 mod server;
