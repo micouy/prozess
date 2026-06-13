@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use rusqlite_migration::{M, Migrations};
 
 use crate::protocol::{
@@ -184,8 +184,6 @@ impl Store {
     }
 
     pub fn find_running_by_name(&self, name: &str) -> Result<Option<i64>> {
-        use rusqlite::OptionalExtension;
-
         let connection = self.connect()?;
 
         connection
