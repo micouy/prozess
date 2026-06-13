@@ -24,6 +24,7 @@ invalidates a decision must update this file in the same PR.
   - [Log storage and cursors](#log-storage-and-cursors)
   - [Tail and follow](#tail-and-follow)
 - [CLI Behavior](#cli-behavior)
+  - [Port discovery](#port-discovery)
   - [Process listing](#process-listing)
   - [Broken pipe handling](#broken-pipe-handling)
 
@@ -249,6 +250,16 @@ parsed flag is a bug; combinations that cannot work (`-f --until`) are
 rejected.
 
 ## CLI Behavior
+
+### Port discovery
+
+Listening TCP ports for a process group are discovered via `netstat2`
+(netlink `sock_diag` on Linux, libproc on macOS); a port is shown as `?`
+when discovery is unavailable.
+
+The system is scanned once per request: listing N processes does one
+socket scan and one process-table scan total, not one of each per running
+process.
 
 ### Process listing
 

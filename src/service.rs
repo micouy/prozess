@@ -1,11 +1,11 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use netstat2::{AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::{
     daemon_state::{DaemonState, ProcessLifecycle},
+    ports::Discovery,
     protocol::{
         PortInfo, PortList, ProcessDetails, ProcessStatus, Request, ResourceProcess,
         ResourceSnapshot, Response, StopSignal,
@@ -156,21 +156,30 @@ impl Service {
             processes = keep;
         }
 
-        for process in &mut processes {
-            if process.status != ProcessStatus::Running {
-                continue;
-            }
+        if processes.iter().any(|p| p.status == ProcessStatus::Running) {
+            // One socket scan and one process-table scan for the whole
+            // list, not one of each per running process.
+            let discovery = Discovery::collect();
+            let system = process_table();
 
-            let details = self.store.get_process_details(process.id)?;
-            let ports = self.ports_for_details(&details)?;
-            process.ports_unavailable = ports.is_none();
-            process.ports = ports
-                .unwrap_or_default()
-                .into_iter()
-                .map(|port| port.local_port)
-                .collect();
-            process.ports.sort_unstable();
-            process.ports.dedup();
+            for process in &mut processes {
+                if process.status != ProcessStatus::Running {
+                    continue;
+                }
+
+                let Some(pgid) = process.pgid.or(process.pid) else {
+                    continue;
+                };
+                let ports = discovery.ports_for(&group_pids(&system, pgid));
+                process.ports_unavailable = ports.is_none();
+                process.ports = ports
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|port| port.local_port)
+                    .collect();
+                process.ports.sort_unstable();
+                process.ports.dedup();
+            }
         }
 
         Ok(processes)
@@ -215,8 +224,7 @@ impl Service {
             return Ok(empty_resource_snapshot(details));
         }
 
-        let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::All, true);
+        let system = process_table();
         let mut processes = Vec::new();
 
         for (pid, process) in system.processes() {
@@ -271,7 +279,7 @@ impl Service {
             });
         }
 
-        let ports = self.ports_for_details(&details)?;
+        let ports = self.ports_for_details(&details);
         let unavailable = ports.is_none();
 
         Ok(PortList {
@@ -283,71 +291,14 @@ impl Service {
         })
     }
 
-    fn ports_for_details(&self, details: &ProcessDetails) -> Result<Option<Vec<PortInfo>>> {
+    fn ports_for_details(&self, details: &ProcessDetails) -> Option<Vec<PortInfo>> {
         if details.status != ProcessStatus::Running {
-            return Ok(Some(Vec::new()));
+            return Some(Vec::new());
         }
 
-        let pids = self.process_group_pids(details)?;
-        let sockets = match netstat2::get_sockets_info(
-            AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6,
-            ProtocolFlags::TCP,
-        ) {
-            Ok(sockets) => sockets,
-            Err(error) => {
-                eprintln!("port discovery unavailable: {error}");
-                return Ok(None);
-            }
-        };
-        let mut ports = Vec::new();
-
-        for socket in sockets {
-            let ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info else {
-                continue;
-            };
-            if tcp.state != TcpState::Listen {
-                continue;
-            }
-
-            let associated_pids = socket
-                .associated_pids
-                .into_iter()
-                .filter(|pid| pids.contains(pid))
-                .collect::<Vec<_>>();
-            if associated_pids.is_empty() {
-                continue;
-            }
-
-            ports.push(PortInfo {
-                protocol: "tcp".to_owned(),
-                state: "listen".to_owned(),
-                local_addr: tcp.local_addr.to_string(),
-                local_port: tcp.local_port,
-                pids: associated_pids,
-            });
-        }
-
-        ports.sort_by_key(|port| (port.local_port, port.local_addr.clone()));
-
-        Ok(Some(ports))
-    }
-
-    fn process_group_pids(&self, details: &ProcessDetails) -> Result<Vec<u32>> {
-        let Some(pgid) = details.pgid.or(details.pid) else {
-            return Ok(Vec::new());
-        };
-        let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::All, true);
-        let mut pids = system
-            .processes()
-            .keys()
-            .map(|pid| pid.as_u32())
-            .filter(|pid| is_thread_group_leader(*pid))
-            .filter(|pid| process_group_id(*pid) == Some(pgid))
-            .collect::<Vec<_>>();
-
-        pids.sort_unstable();
-        Ok(pids)
+        let pgid = details.pgid.or(details.pid)?;
+        let pids = group_pids(&process_table(), pgid);
+        Discovery::collect().ports_for(&pids)
     }
 
     fn set_timeout_for_id(&self, id: i64, timeout_ms: Option<u64>) -> Result<()> {
@@ -483,6 +434,26 @@ fn empty_resource_snapshot(details: ProcessDetails) -> ResourceSnapshot {
         total_cpu_percent: 0.0,
         processes: Vec::new(),
     }
+}
+
+fn process_table() -> System {
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    system
+}
+
+/// Sorted thread-group-leader pids belonging to `pgid`, from one scan.
+fn group_pids(system: &System, pgid: u32) -> Vec<u32> {
+    let mut pids = system
+        .processes()
+        .keys()
+        .map(|pid| pid.as_u32())
+        .filter(|pid| is_thread_group_leader(*pid))
+        .filter(|pid| process_group_id(*pid) == Some(pgid))
+        .collect::<Vec<_>>();
+
+    pids.sort_unstable();
+    pids
 }
 
 fn process_group_id(pid: u32) -> Option<u32> {
