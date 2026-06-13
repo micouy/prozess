@@ -254,8 +254,11 @@ rejected.
 ### Port discovery
 
 Listening TCP ports for a process group are discovered via `netstat2`
-(netlink `sock_diag` on Linux, libproc on macOS); a port is shown as `?`
-when discovery is unavailable.
+(netlink `sock_diag` on Linux, libproc on macOS). When that fails — most
+often a sandboxed Linux kernel without `sock_diag`, where agents run — the
+Linux path falls back to parsing `/proc/net/tcp{,6}` for listening sockets
+and matching their inodes to the group's open fds under `/proc/<pid>/fd`.
+Only when both are unavailable is a port shown as `?`.
 
 The system is scanned once per request: listing N processes does one
 socket scan and one process-table scan total, not one of each per running
