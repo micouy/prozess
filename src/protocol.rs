@@ -58,6 +58,7 @@ pub enum ProcessSelector {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSpec {
     pub name: Option<String>,
+    pub replace: bool,
     pub timeout_ms: Option<u64>,
     pub command: Vec<String>,
     pub cwd: String,

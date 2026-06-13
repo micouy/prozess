@@ -45,7 +45,7 @@ impl Service {
                 database: self.store.database_path().display().to_string(),
             },
             Request::DaemonStop => Response::DaemonStopping,
-            Request::Spawn { spec } => Response::Spawned(self.spawn_process(spec)?),
+            Request::Spawn { spec } => Response::Spawned(self.spawn_process(spec).await?),
             Request::StopProcess {
                 selector,
                 force,
@@ -97,10 +97,16 @@ impl Service {
         Ok(response)
     }
 
-    fn spawn_process(
+    async fn spawn_process(
         &self,
         spec: crate::protocol::RunSpec,
     ) -> Result<crate::protocol::ProcessSummary> {
+        if spec.replace
+            && let Some(name) = spec.name.as_deref()
+        {
+            self.stop_holders_of(name).await?;
+        }
+
         let timeout_ms = spec.timeout_ms;
         let process = self.supervisor.spawn(self.store.clone(), spec)?;
 
@@ -109,6 +115,23 @@ impl Service {
         }
 
         Ok(process)
+    }
+
+    /// Confirmed-kills the running generation and any lost-but-alive ones.
+    async fn stop_holders_of(&self, name: &str) -> Result<()> {
+        if let Some(id) = self.store.find_running_by_name(name)? {
+            self.stop_process(&crate::protocol::ProcessSelector::Id(id), false, None)
+                .await?;
+        }
+
+        for (id, pid, token) in self.store.lost_generations(name)? {
+            if crate::pid_identity::is_alive(pid, token) {
+                self.stop_process(&crate::protocol::ProcessSelector::Id(id), false, None)
+                    .await?;
+            }
+        }
+
+        Ok(())
     }
 
     fn list_processes(&self, all: bool) -> Result<Vec<crate::protocol::ProcessSummary>> {
@@ -167,7 +190,7 @@ impl Service {
             self.stop_process(selector, false, None).await?;
         }
 
-        self.spawn_process(spec)
+        self.spawn_process(spec).await
     }
 
     fn set_timeout(

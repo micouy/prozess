@@ -377,6 +377,96 @@ fn daemon_start_reports_startup_failure_cause() -> Result<()> {
 }
 
 #[test]
+fn replace_takes_over_name_across_daemon_restarts() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "svc", "--", "/bin/sleep", "30"],
+    )?;
+
+    // Replace a running generation.
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &[
+            "run",
+            "--replace",
+            "--name",
+            "svc",
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo two; sleep 30",
+        ],
+    )?;
+    wait_for_logs(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "svc"],
+        |logs| logs.contains("two"),
+    )?;
+
+    // Replace a lost-but-alive generation after a daemon restart.
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &[
+            "run",
+            "--replace",
+            "--name",
+            "svc",
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo three; sleep 30",
+        ],
+    )?;
+    wait_for_logs(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "svc"],
+        |logs| logs.contains("three"),
+    )?;
+
+    // Exactly one live generation remains.
+    let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
+    let stdout = String::from_utf8(ps.stdout)?;
+    assert_eq!(stdout.matches("svc").count(), 1, "{stdout}");
+
+    // --replace without --name is rejected.
+    let output = Command::new(&binary)
+        .args(["run", "--replace", "--", "/bin/echo", "hi"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .output()?;
+    assert!(!output.status.success());
+
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["stop", "svc", "--force"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn run_rejects_name_conflicts_until_previous_generation_dies() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;

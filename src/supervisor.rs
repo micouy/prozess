@@ -124,11 +124,11 @@ impl Supervisor {
 }
 
 fn ensure_name_not_lost_alive(store: &Store, name: &str) -> Result<()> {
-    for (pid, token) in store.lost_generations(name)? {
+    for (_, pid, token) in store.lost_generations(name)? {
         if crate::pid_identity::is_alive(pid, token) {
             bail!(
                 "process {name:?} is lost but still running (pid {pid}); \
-                 stop it with `pz stop {name}` before reusing the name"
+                 stop it with `pz stop {name}` or pass --replace"
             );
         }
     }

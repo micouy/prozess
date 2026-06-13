@@ -29,6 +29,8 @@ pz daemon run
 ```sh
 pz run --name api -- cargo run
 pz run --name worker --cwd /path/to/repo -- ./gradlew :app:run
+pz run --replace --name api -- cargo run   # kill any live holder of the name first
+
 ```
 
 Processes run with an empty environment by default. Add env explicitly:

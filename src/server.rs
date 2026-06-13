@@ -515,6 +515,7 @@ mod tests {
         wait_for_socket(&socket).await?;
 
         let spec = RunSpec {
+            replace: false,
             name: Some("env-test".to_owned()),
             timeout_ms: None,
             command: vec!["/usr/bin/env".to_owned()],
@@ -1292,6 +1293,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_replace_takes_over_running_name() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path());
+        spec.name = Some("svc".to_owned());
+        let Response::Spawned(old) = client.send(Request::Spawn { spec: spec.clone() }).await?
+        else {
+            bail!("expected spawned response");
+        };
+        let old_pid = old.pid.context("old generation should have a pid")?;
+
+        spec.replace = true;
+        let Response::Spawned(new) = client.send(Request::Spawn { spec }).await? else {
+            bail!("expected spawned response");
+        };
+        // The old generation is confirmed dead before the successor spawns.
+        assert!(!crate::terminate::group_alive(old_pid));
+        assert_ne!(new.id, old.id);
+
+        let store = Store::open(StoreConfig {
+            database_path: database,
+        })?;
+        assert_eq!(
+            store.get_process(old.id)?.status,
+            crate::protocol::ProcessStatus::Killed
+        );
+        assert_eq!(
+            store.get_process(new.id)?.status,
+            crate::protocol::ProcessStatus::Running
+        );
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(new.id),
+                force: true,
+                grace_ms: None,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_replace_reaps_lost_but_alive_generation() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+
+        use std::os::unix::process::CommandExt;
+        // Its own group, like a real pz-spawned orphan: the replace kill
+        // targets the group, not the pid.
+        let mut orphan = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .context("failed to spawn orphan")?;
+        let orphan_pid = orphan.id();
+        let token = crate::pid_identity::current_token(orphan_pid);
+        assert!(token.is_some());
+
+        let store = Store::open(StoreConfig {
+            database_path: database.clone(),
+        })?;
+        let id = store.reserve_process(
+            Some("svc"),
+            &["/bin/sleep".to_owned(), "30".to_owned()],
+            dir.path(),
+            false,
+            &[],
+            &[],
+        )?;
+        store.activate_process(id, orphan_pid, orphan_pid, token)?;
+
+        let server_socket = socket.clone();
+        let server_database = database.clone();
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path());
+        spec.name = Some("svc".to_owned());
+        spec.replace = true;
+        let Response::Spawned(new) = client.send(Request::Spawn { spec }).await? else {
+            bail!("expected spawned response");
+        };
+        assert!(!crate::terminate::group_alive(orphan_pid));
+        orphan.wait().context("failed to reap orphan")?;
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(new.id),
+                force: true,
+                grace_ms: None,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_replace_without_conflict_just_spawns() -> Result<()> {
+        let dir = tempdir()?;
+        let socket = dir.path().join("pz.sock");
+        let database = dir.path().join("pz.sqlite");
+        let server_socket = socket.clone();
+        let server_database = database;
+        let server =
+            tokio::spawn(async move { start_with_paths(server_socket, server_database).await });
+        let client = Client::for_socket(socket.clone());
+
+        wait_for_socket(&socket).await?;
+
+        let mut spec = test_run_spec(vec!["/bin/sleep".to_owned(), "30".to_owned()], dir.path());
+        spec.name = Some("svc".to_owned());
+        spec.replace = true;
+        let Response::Spawned(process) = client.send(Request::Spawn { spec }).await? else {
+            bail!("expected spawned response");
+        };
+
+        client
+            .send(Request::StopProcess {
+                selector: ProcessSelector::Id(process.id),
+                force: true,
+                grace_ms: None,
+            })
+            .await?;
+        client.send(Request::DaemonStop).await?;
+        server.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn daemon_rejects_duplicate_running_name_without_leaking() -> Result<()> {
         let dir = tempdir()?;
         let socket = dir.path().join("pz.sock");
@@ -1409,6 +1557,7 @@ mod tests {
     fn test_run_spec(command: Vec<String>, cwd: &Path) -> RunSpec {
         RunSpec {
             name: None,
+            replace: false,
             timeout_ms: None,
             command,
             cwd: cwd.display().to_string(),

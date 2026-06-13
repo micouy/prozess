@@ -122,6 +122,14 @@ reserved as a row *before* the child is spawned, backed by a partial
 unique index on running names, so a conflict can never leak an untracked
 child. Failed and dead generations do not block the name.
 
+`pz run --replace` is the only implicit kill: it confirmed-kills every
+live holder of the name (the running generation and any lost-but-alive
+ones, identity-checked) before spawning. This does not violate the
+no-unintended-kills rule — the flag is the user's explicit intent — and
+it makes `run --replace` idempotent for boot scripts: a healthy service
+is churned only when the user asks for it. Without the flag, a conflict
+is always an error, never a takeover.
+
 ### Definition of a dead process group
 
 Killing decisions need one canonical liveness definition, used both by
