@@ -104,7 +104,7 @@ impl Service {
         if spec.replace
             && let Some(name) = spec.name.as_deref()
         {
-            self.clear_name(name).await?;
+            self.stop_holders_of(name).await?;
         }
 
         let timeout_ms = spec.timeout_ms;
@@ -117,9 +117,8 @@ impl Service {
         Ok(process)
     }
 
-    /// Confirmed-kills every live holder of `name` — the running
-    /// generation and any lost-but-alive ones.
-    async fn clear_name(&self, name: &str) -> Result<()> {
+    /// Confirmed-kills the running generation and any lost-but-alive ones.
+    async fn stop_holders_of(&self, name: &str) -> Result<()> {
         if let Some(id) = self.store.find_running_by_name(name)? {
             self.stop_process(&crate::protocol::ProcessSelector::Id(id), false, None)
                 .await?;
