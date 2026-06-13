@@ -58,7 +58,6 @@ pub enum ProcessSelector {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSpec {
     pub name: Option<String>,
-    /// Kill a live holder of the name (confirmed) before spawning.
     pub replace: bool,
     pub timeout_ms: Option<u64>,
     pub command: Vec<String>,

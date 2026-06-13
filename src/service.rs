@@ -117,8 +117,8 @@ impl Service {
         Ok(process)
     }
 
-    /// Confirmed-kills every live holder of `name`: the running generation
-    /// and any lost-but-alive ones.
+    /// Confirmed-kills every live holder of `name` — the running
+    /// generation and any lost-but-alive ones.
     async fn clear_name(&self, name: &str) -> Result<()> {
         if let Some(id) = self.store.find_running_by_name(name)? {
             self.stop_process(&crate::protocol::ProcessSelector::Id(id), false, None)
