@@ -544,7 +544,9 @@ fn logs_all_mirrors_every_process_with_prefixes() -> Result<()> {
     )?;
     run_pz(&binary, &runtime_dir, &state_dir, &["wait", "two"])?;
 
-    // Non-follow dump: both processes, name-prefixed, in insert order.
+    // Non-follow dump: every process's output, name-prefixed. Output
+    // capture across processes runs in independent tasks, so the relative
+    // order of two different processes' chunks is not guaranteed here.
     let logs = wait_for_logs(
         &binary,
         &runtime_dir,
@@ -552,9 +554,8 @@ fn logs_all_mirrors_every_process_with_prefixes() -> Result<()> {
         &["logs", "--all"],
         |logs| logs.contains("one | from-one") && logs.contains("two | from-two"),
     )?;
-    let one = logs.find("one | from-one").context("missing one")?;
-    let two = logs.find("two | from-two").context("missing two")?;
-    assert!(one < two, "{logs}");
+    assert!(logs.contains("one | from-one"), "{logs}");
+    assert!(logs.contains("two | from-two"), "{logs}");
 
     // Follower started with --tail 0 sees only processes spawned later.
     let mut follower = Command::new(&binary)
