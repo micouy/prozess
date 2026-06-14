@@ -6,8 +6,8 @@ pub struct RuntimePaths {
     pub database: PathBuf,
 }
 
-impl RuntimePaths {
-    pub fn default() -> Self {
+impl Default for RuntimePaths {
+    fn default() -> Self {
         let runtime_dir = runtime_dir();
         let socket = runtime_dir.join("pz.sock");
         let state_dir = state_dir();

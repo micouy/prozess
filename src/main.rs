@@ -1,17 +1,3 @@
-mod cli;
-mod client;
-mod config;
-mod daemon_state;
-mod pid_identity;
-mod ports;
-mod protocol;
-mod runtime;
-mod server;
-mod service;
-mod store;
-mod supervisor;
-mod terminate;
-
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -20,12 +6,11 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
-use crate::cli::{Cli, Command, DaemonCommand, LogStream, RunArgs};
-use crate::client::Client;
-use crate::config::Config;
-use crate::protocol::{
+use pz::cli::{Cli, Command, DaemonCommand, RunArgs};
+use pz::client::Client;
+use pz::config::Config;
+use pz::protocol::{
     EnvVar, OutputChunk, OutputStream, ProcessSelector, ProcessStatus, Request, Response, RunSpec,
-    StopSignal,
 };
 
 #[tokio::main]
@@ -34,8 +19,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Daemon { command } => match command {
-            DaemonCommand::Start => server::start().await,
-            DaemonCommand::Run => server::run().await,
+            DaemonCommand::Start => pz::daemon::start().await,
+            DaemonCommand::Run => pz::daemon::run().await,
             DaemonCommand::Status => {
                 print_response(Client::new().send(Request::DaemonStatus).await)
             }
@@ -528,7 +513,7 @@ fn print_response(response: Result<Response>) -> Result<()> {
     Ok(())
 }
 
-fn print_ports(ports: &crate::protocol::PortList) {
+fn print_ports(ports: &pz::protocol::PortList) {
     println!("id: {}", ports.process_id);
     if let Some(name) = &ports.name {
         println!("name: {name}");
@@ -567,7 +552,7 @@ fn print_ports(ports: &crate::protocol::PortList) {
     }
 }
 
-fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) {
+fn print_resource_snapshot(snapshot: &pz::protocol::ResourceSnapshot) {
     println!("id: {}", snapshot.process_id);
     if let Some(name) = &snapshot.name {
         println!("name: {name}");
@@ -655,7 +640,7 @@ fn print_output(chunks: &[OutputChunk]) -> Result<()> {
     Ok(())
 }
 
-fn print_process_details(process: &crate::protocol::ProcessDetails) {
+fn print_process_details(process: &pz::protocol::ProcessDetails) {
     let pid = process
         .pid
         .map(|pid| pid.to_string())
@@ -697,7 +682,7 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
     }
 }
 
-fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
+fn print_process_list(processes: &[pz::protocol::ProcessSummary]) {
     println!(
         "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} COMMAND / ERROR",
         "ID", "NAME", "STATUS", "PORTS", "PID", "EXIT"
@@ -746,31 +731,6 @@ fn format_ports(unavailable: bool, ports: &[u16]) -> String {
     }
 }
 
-impl From<LogStream> for OutputStream {
-    fn from(stream: LogStream) -> Self {
-        match stream {
-            LogStream::All => Self::All,
-            LogStream::Stdout => Self::Stdout,
-            LogStream::Stderr => Self::Stderr,
-        }
-    }
-}
-
-impl std::fmt::Display for crate::protocol::ProcessStatus {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let status = match self {
-            Self::Running => "running",
-            Self::Exited => "exited",
-            Self::Failed => "failed",
-            Self::Killed => "killed",
-            Self::TimedOut => "timed_out",
-            Self::Lost => "lost",
-        };
-
-        formatter.write_str(status)
-    }
-}
-
 fn format_duration_ms(timeout_ms: u64) -> String {
     if timeout_ms.is_multiple_of(3_600_000) {
         format!("{}h", timeout_ms / 3_600_000)
@@ -780,16 +740,5 @@ fn format_duration_ms(timeout_ms: u64) -> String {
         format!("{}s", timeout_ms / 1_000)
     } else {
         format!("{timeout_ms}ms")
-    }
-}
-
-impl std::fmt::Display for StopSignal {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let signal = match self {
-            Self::Term => "TERM",
-            Self::Kill => "KILL",
-        };
-
-        formatter.write_str(signal)
     }
 }
