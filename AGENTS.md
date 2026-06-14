@@ -4,6 +4,15 @@
 logs live in SQLite, the CLI talks to the daemon over a Unix socket. See
 README.md for usage.
 
+## Layout
+
+One crate. `protocol` is the shared wire contract; `src/client/` is the
+presentation half (transport, command dispatch, output); `src/daemon/`
+holds the actions and facts and is compiler-private — only
+`daemon::run`/`start` are re-exported, so client code cannot reach daemon
+internals. `main.rs` is a thin shim over `client::run`. Keep new code on
+the correct side of this line.
+
 ## Design decisions
 
 Design decisions are recorded in DESIGN.md.

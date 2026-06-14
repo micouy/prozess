@@ -8,6 +8,7 @@ invalidates a decision must update this file in the same PR.
 - [Architecture](#architecture)
   - [Process ownership](#process-ownership)
   - [Division of work between daemon and client](#division-of-work-between-daemon-and-client)
+  - [Module layout](#module-layout)
   - [Storage](#storage)
   - [Schema migrations](#schema-migrations)
   - [IPC model](#ipc-model)
@@ -53,6 +54,24 @@ reports its outcome), or it is observing its own child (`wait`, where
 only the daemon learns of the exit directly; a client could merely poll
 an approximation). Waiting for anything else is a client polling loop,
 not a blocking request.
+
+### Module layout
+
+One `pz` crate, with the daemon/client split above made structural and
+compiler-enforced rather than a convention. `lib.rs` exposes
+`protocol`, `client`, `cli`, `config`, and `runtime`; the daemon lives in
+`src/daemon/` whose submodules are private — only `daemon::run`/`start`
+are re-exported. Client code therefore cannot name daemon internals like
+`daemon::store`; the boundary is checked at compile time.
+
+`protocol` is the wire contract both sides share. `src/client/` holds the
+presentation half (transport, command dispatch, output rendering);
+`src/daemon/` holds the actions and facts. `main.rs` is a thin shim that
+parses the CLI and calls `client::run`.
+
+It stays one published crate: a separate web client will be a
+feature-gated module depending only on `client` and `protocol`, never a
+separate crate, so `cargo install pz` is unaffected.
 
 ### Storage
 
