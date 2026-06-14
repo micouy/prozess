@@ -142,14 +142,17 @@ mod linux_proc {
         let contents = std::fs::read_to_string(path).ok()?;
         let mut listeners = Vec::new();
 
+        // Columns: 0 sl, 1 local_address, 2 rem_address, 3 st, 4 tx:rx,
+        // 5 tr:when, 6 retrnsmt, 7 uid, 8 timeout, 9 inode.
         for line in contents.lines().skip(1) {
-            let mut fields = line.split_whitespace();
-            let local = fields.nth(1)?; // skip sl, take local_address
-            let state = fields.next()?;
-            // st, then tx/rx queue, tr/when, retrnsmt, uid, timeout, inode
-            let inode = fields.nth(5)?;
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            let (Some(local), Some(state), Some(inode)) =
+                (fields.get(1), fields.get(3), fields.get(9))
+            else {
+                continue;
+            };
 
-            if state != TCP_LISTEN {
+            if *state != TCP_LISTEN {
                 continue;
             }
             let (addr, port) = parse_addr(local)?;
@@ -253,10 +256,10 @@ mod linux_proc {
         fn skips_non_listening_rows() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("tcp");
-            // 01 == ESTABLISHED, must be ignored.
+            // 01 == ESTABLISHED in the st column, must be ignored.
             std::fs::write(
                 &path,
-                "  sl  local_address rem_address   st\n   0: 0100007F:1F90 0100007F:9999 01 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0000 100 0 0 10 0\n",
+                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:1F90 0100007F:9999 01 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0000 100 0 0 10 0\n",
             )
             .unwrap();
 
