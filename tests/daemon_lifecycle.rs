@@ -523,6 +523,70 @@ fn run_rejects_name_conflicts_until_previous_generation_dies() -> Result<()> {
 }
 
 #[test]
+fn logs_all_mirrors_every_process_with_prefixes() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "one", "--", "/bin/echo", "from-one"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["wait", "one"])?;
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "two", "--", "/bin/echo", "from-two"],
+    )?;
+    run_pz(&binary, &runtime_dir, &state_dir, &["wait", "two"])?;
+
+    // Non-follow dump: both processes, name-prefixed, in insert order.
+    let logs = wait_for_logs(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["logs", "--all"],
+        |logs| logs.contains("one | from-one") && logs.contains("two | from-two"),
+    )?;
+    let one = logs.find("one | from-one").context("missing one")?;
+    let two = logs.find("two | from-two").context("missing two")?;
+    assert!(one < two, "{logs}");
+
+    // Follower started with --tail 0 sees only processes spawned later.
+    let mut follower = Command::new(&binary)
+        .args(["logs", "--all", "-f", "--tail", "0"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn follower")?;
+    sleep(Duration::from_millis(300));
+    run_pz(
+        &binary,
+        &runtime_dir,
+        &state_dir,
+        &["run", "--name", "three", "--", "/bin/echo", "from-three"],
+    )?;
+    sleep(Duration::from_millis(800));
+    follower.kill().context("failed to stop follower")?;
+    let output = follower
+        .wait_with_output()
+        .context("failed to reap follower")?;
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("three | from-three"), "{stdout}");
+    assert!(!stdout.contains("from-one"), "{stdout}");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    wait_for_socket_removal(runtime_dir.path().join("pz.sock"))?;
+
+    Ok(())
+}
+
+#[test]
 fn logs_follow_prints_output_and_exits() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;

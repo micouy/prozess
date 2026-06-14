@@ -78,14 +78,12 @@ impl Service {
                 until_ms,
                 tail_lines,
             } => {
-                let (chunks, resume_after_id) = self.store.read_output(
-                    self.store.resolve_process_id(&selector)?,
-                    stream,
-                    after_id,
-                    since_ms,
-                    until_ms,
-                    tail_lines,
-                )?;
+                let process_id = selector
+                    .map(|selector| self.store.resolve_process_id(&selector))
+                    .transpose()?;
+                let (chunks, resume_after_id) = self
+                    .store
+                    .read_output(process_id, stream, after_id, since_ms, until_ms, tail_lines)?;
 
                 Response::Output {
                     chunks,

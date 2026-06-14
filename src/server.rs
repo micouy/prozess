@@ -392,7 +392,7 @@ mod tests {
 
         let response = client
             .send(Request::ReadLogs {
-                selector: ProcessSelector::Id(process.id),
+                selector: Some(ProcessSelector::Id(process.id)),
                 stream: crate::protocol::OutputStream::Stdout,
                 after_id: None,
                 since_ms: None,
@@ -1260,7 +1260,7 @@ mod tests {
 
         let response = client
             .send(Request::ReadLogs {
-                selector: ProcessSelector::Name("logs".to_owned()),
+                selector: Some(ProcessSelector::Name("logs".to_owned())),
                 stream: crate::protocol::OutputStream::Stdout,
                 after_id: None,
                 since_ms: None,
@@ -1600,7 +1600,7 @@ mod tests {
         })?;
 
         for _ in 0..100 {
-            let (chunks, _) = store.read_output(id, stream, None, None, None, None)?;
+            let (chunks, _) = store.read_output(Some(id), stream, None, None, None, None)?;
             let output = chunks
                 .into_iter()
                 .flat_map(|chunk| chunk.data)
@@ -1625,7 +1625,7 @@ mod tests {
         })?;
 
         for _ in 0..100 {
-            let (chunks, _) = store.read_output(id, stream, None, None, None, None)?;
+            let (chunks, _) = store.read_output(Some(id), stream, None, None, None, None)?;
             let output = chunks
                 .into_iter()
                 .flat_map(|chunk| chunk.data)
