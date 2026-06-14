@@ -11,13 +11,13 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 
+use super::daemon_state::DaemonState;
+use super::service::Service;
+use super::store::{Store, StoreConfig};
+use super::supervisor::Supervisor;
 use crate::client::Client;
-use crate::daemon_state::DaemonState;
 use crate::protocol::{Request, Response};
 use crate::runtime::RuntimePaths;
-use crate::service::Service;
-use crate::store::{Store, StoreConfig};
-use crate::supervisor::Supervisor;
 
 pub async fn start() -> Result<()> {
     if let Ok(Response::DaemonStatus {
@@ -340,7 +340,7 @@ mod tests {
         })?;
         let token = store.pid_identity(process.id)?;
         assert!(token.is_some(), "spawn should record a pid identity token");
-        assert!(crate::pid_identity::is_alive(
+        assert!(crate::daemon::pid_identity::is_alive(
             process.pid.context("spawned process should have a pid")?,
             token,
         ));
@@ -646,7 +646,7 @@ mod tests {
         );
         // The response means confirmed death, immediately assertable
         // with the same liveness definition the primitive uses.
-        assert!(!crate::terminate::group_alive(pid));
+        assert!(!crate::daemon::terminate::group_alive(pid));
 
         let store = Store::open(StoreConfig {
             database_path: database,
@@ -691,7 +691,7 @@ mod tests {
             bail!("expected spawned response");
         };
         // The old generation must be dead before its successor spawns.
-        assert!(!crate::terminate::group_alive(old_pid));
+        assert!(!crate::daemon::terminate::group_alive(old_pid));
         assert_ne!(new.pid, old.pid);
 
         client
@@ -885,13 +885,13 @@ mod tests {
 
         // TERM is ignored; the escalation must still end the group.
         for _ in 0..800 {
-            if !crate::terminate::group_alive(pid) {
+            if !crate::daemon::terminate::group_alive(pid) {
                 break;
             }
             sleep(Duration::from_millis(10)).await;
         }
         assert!(
-            !crate::terminate::group_alive(pid),
+            !crate::daemon::terminate::group_alive(pid),
             "timed-out process survived escalation"
         );
 
@@ -1318,7 +1318,7 @@ mod tests {
             bail!("expected spawned response");
         };
         // The old generation is confirmed dead before the successor spawns.
-        assert!(!crate::terminate::group_alive(old_pid));
+        assert!(!crate::daemon::terminate::group_alive(old_pid));
         assert_ne!(new.id, old.id);
 
         let store = Store::open(StoreConfig {
@@ -1361,7 +1361,7 @@ mod tests {
             .spawn()
             .context("failed to spawn orphan")?;
         let orphan_pid = orphan.id();
-        let token = crate::pid_identity::current_token(orphan_pid);
+        let token = crate::daemon::pid_identity::current_token(orphan_pid);
         assert!(token.is_some());
 
         let store = Store::open(StoreConfig {
@@ -1390,7 +1390,7 @@ mod tests {
         let Response::Spawned(new) = client.send(Request::Spawn { spec }).await? else {
             bail!("expected spawned response");
         };
-        assert!(!crate::terminate::group_alive(orphan_pid));
+        assert!(!crate::daemon::terminate::group_alive(orphan_pid));
         orphan.wait().context("failed to reap orphan")?;
 
         client
@@ -1500,7 +1500,7 @@ mod tests {
             .spawn()
             .context("failed to spawn orphan")?;
         let orphan_pid = orphan.id();
-        let token = crate::pid_identity::current_token(orphan_pid);
+        let token = crate::daemon::pid_identity::current_token(orphan_pid);
         assert!(token.is_some());
 
         let store = Store::open(StoreConfig {
