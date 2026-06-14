@@ -111,4 +111,6 @@ values.
 - `pz stop` signals the process group and returns once it is confirmed
   dead, escalating SIGTERM to SIGKILL after the grace period.
 - Logs are captured after spawn and can be read or followed later.
+- Port discovery falls back to `/proc/net/tcp` on Linux when netlink is
+  unavailable (e.g. sandboxed kernels).
 - If the daemon dies, previously running processes are marked `lost` on daemon restart.
