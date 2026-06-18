@@ -235,3 +235,29 @@ pub struct PortInfo {
     pub local_port: u16,
     pub pids: Vec<u32>,
 }
+
+impl std::fmt::Display for ProcessStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let status = match self {
+            Self::Running => "running",
+            Self::Exited => "exited",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+            Self::TimedOut => "timed_out",
+            Self::Lost => "lost",
+        };
+
+        formatter.write_str(status)
+    }
+}
+
+impl std::fmt::Display for StopSignal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let signal = match self {
+            Self::Term => "TERM",
+            Self::Kill => "KILL",
+        };
+
+        formatter.write_str(signal)
+    }
+}

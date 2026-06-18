@@ -3,13 +3,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
-use crate::{
+use crate::protocol::{
+    PortInfo, PortList, ProcessDetails, ProcessStatus, Request, ResourceProcess, ResourceSnapshot,
+    Response, StopSignal,
+};
+
+use super::{
     daemon_state::{DaemonState, ProcessLifecycle},
     ports::Discovery,
-    protocol::{
-        PortInfo, PortList, ProcessDetails, ProcessStatus, Request, ResourceProcess,
-        ResourceSnapshot, Response, StopSignal,
-    },
     store::{Store, TimeoutSpec},
     supervisor::Supervisor,
 };
@@ -123,7 +124,7 @@ impl Service {
         }
 
         for (id, pid, token) in self.store.lost_generations(name)? {
-            if crate::pid_identity::is_alive(pid, token) {
+            if super::pid_identity::is_alive(pid, token) {
                 self.stop_process(&crate::protocol::ProcessSelector::Id(id), false, None)
                     .await?;
             }
@@ -144,7 +145,7 @@ impl Service {
                     let token = self.store.pid_identity(process.id)?;
                     let alive = process
                         .pid
-                        .is_some_and(|pid| crate::pid_identity::is_alive(pid, token));
+                        .is_some_and(|pid| super::pid_identity::is_alive(pid, token));
                     if !alive {
                         continue;
                     }
@@ -330,10 +331,10 @@ impl Service {
                 // when a group member exits) aborts this timeout task, and
                 // the escalation must survive that to kill the whole group.
                 tokio::spawn(async move {
-                    let _ = crate::terminate::kill_group_confirmed(
+                    let _ = super::terminate::kill_group_confirmed(
                         process.pgid,
                         false,
-                        crate::terminate::DEFAULT_GRACE,
+                        super::terminate::DEFAULT_GRACE,
                     )
                     .await;
                 });
@@ -365,7 +366,7 @@ impl Service {
             let token = self.store.pid_identity(id)?;
             let alive = process
                 .pid
-                .is_some_and(|pid| crate::pid_identity::is_alive(pid, token));
+                .is_some_and(|pid| super::pid_identity::is_alive(pid, token));
 
             if !alive {
                 self.store.mark_process_killed(id)?;
@@ -385,9 +386,9 @@ impl Service {
             .context("process has no pid or process group to stop")?;
         let grace = grace_ms
             .map(Duration::from_millis)
-            .unwrap_or(crate::terminate::DEFAULT_GRACE);
+            .unwrap_or(super::terminate::DEFAULT_GRACE);
 
-        let signal = crate::terminate::kill_group_confirmed(pgid, force, grace).await?;
+        let signal = super::terminate::kill_group_confirmed(pgid, force, grace).await?;
         // Death is confirmed; killed overwrites the reaper's exited.
         self.store.mark_process_killed(id)?;
 

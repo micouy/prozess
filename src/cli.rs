@@ -182,3 +182,13 @@ pub enum LogStream {
     Stdout,
     Stderr,
 }
+
+impl From<LogStream> for crate::protocol::OutputStream {
+    fn from(stream: LogStream) -> Self {
+        match stream {
+            LogStream::All => Self::All,
+            LogStream::Stdout => Self::Stdout,
+            LogStream::Stderr => Self::Stderr,
+        }
+    }
+}

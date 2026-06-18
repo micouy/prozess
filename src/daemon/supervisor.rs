@@ -3,9 +3,10 @@ use std::{collections::BTreeMap, path::PathBuf, process::Stdio};
 use anyhow::{Context, Result, bail};
 use tokio::{io::AsyncReadExt, process::Command};
 
-use crate::{
+use crate::protocol::{OutputStream, ProcessSummary, RunSpec};
+
+use super::{
     daemon_state::{DaemonState, RuntimeProcessMetadata},
-    protocol::{OutputStream, ProcessSummary, RunSpec},
     store::Store,
 };
 
@@ -79,7 +80,7 @@ impl Supervisor {
         };
         // Captured immediately so later liveness checks can tell this
         // process apart from an unrelated one that recycled its pid.
-        let pid_started_at = crate::pid_identity::current_token(pid);
+        let pid_started_at = super::pid_identity::current_token(pid);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let process = store.activate_process(process_id, pid, pid, pid_started_at)?;
@@ -125,7 +126,7 @@ impl Supervisor {
 
 fn ensure_name_not_lost_alive(store: &Store, name: &str) -> Result<()> {
     for (_, pid, token) in store.lost_generations(name)? {
-        if crate::pid_identity::is_alive(pid, token) {
+        if super::pid_identity::is_alive(pid, token) {
             bail!(
                 "process {name:?} is lost but still running (pid {pid}); \
                  stop it with `pz stop {name}` or pass --replace"
