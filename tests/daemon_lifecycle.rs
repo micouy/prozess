@@ -235,14 +235,18 @@ fn ps_hides_finished_processes_unless_all() -> Result<()> {
     let show = run_pz(&binary, &runtime_dir, &state_dir, &["show", "alive"])?;
     let pid = String::from_utf8(show.stdout)?
         .lines()
-        .find_map(|line| line.strip_prefix("pid: ").map(str::to_owned))
+        .find_map(|line| {
+            line.strip_prefix("pid: ")
+                .and_then(|pid| pid.trim().parse().ok())
+        })
         .context("show should print a pid")?;
-    run_pz(
-        &binary,
-        &runtime_dir,
-        &state_dir,
-        &["run", "--", "/bin/kill", "-9", &pid],
-    )?;
+    // Kill directly rather than spawning /bin/kill, which is absent on
+    // minimal systems (kill is a shell builtin there).
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .context("failed to kill orphan")?;
     for _ in 0..100 {
         let ps = run_pz(&binary, &runtime_dir, &state_dir, &["ps"])?;
         if !String::from_utf8(ps.stdout)?.contains("alive") {
