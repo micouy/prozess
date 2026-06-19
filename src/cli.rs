@@ -62,6 +62,20 @@ pub enum Command {
 
     /// Print captured process output.
     Logs(LogsArgs),
+
+    /// Serve a web interface to the daemon.
+    Serve(ServeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// Address to bind the web server to.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+
+    /// Port to bind the web server to.
+    #[arg(long, default_value_t = 7878)]
+    pub port: u16,
 }
 
 #[derive(Debug, Subcommand)]

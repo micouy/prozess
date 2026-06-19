@@ -9,7 +9,7 @@ use tokio::{
 use crate::protocol::{Request, Response};
 use crate::runtime::RuntimePaths;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client {
     socket_path: PathBuf,
 }

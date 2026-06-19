@@ -4,3 +4,6 @@ pub mod config;
 pub mod daemon;
 pub mod protocol;
 pub mod runtime;
+
+#[cfg(feature = "web")]
+pub mod web;

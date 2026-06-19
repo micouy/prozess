@@ -113,7 +113,18 @@ pub async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Command::Serve(args) => serve(args).await,
     }
+}
+
+#[cfg(feature = "web")]
+async fn serve(args: crate::cli::ServeArgs) -> Result<()> {
+    crate::web::serve(args.host, args.port).await
+}
+
+#[cfg(not(feature = "web"))]
+async fn serve(_args: crate::cli::ServeArgs) -> Result<()> {
+    bail!("this build has no web support; reinstall without --no-default-features")
 }
 
 async fn wait_process(selector: ProcessSelector) -> Result<()> {

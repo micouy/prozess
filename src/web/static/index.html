@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pz</title>
+<style>
+  :root { color-scheme: light dark; --gap: 0.75rem; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: grid; grid-template-rows: auto 1fr; height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: var(--gap);
+    padding: var(--gap); border-bottom: 1px solid #8884;
+  }
+  header h1 { font-size: 1rem; margin: 0; }
+  header .spacer { flex: 1; }
+  main { display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
+  #list { overflow-y: auto; border-right: 1px solid #8884; }
+  #detail { overflow: hidden; display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #8882; }
+  tr.proc { cursor: pointer; }
+  tr.proc.selected { background: #8883; }
+  .status-running { color: #2a2; }
+  .status-lost { color: #c80; }
+  .status-exited, .status-killed, .status-failed, .status-timed_out { color: #888; }
+  #logs { white-space: pre-wrap; overflow-y: auto; padding: var(--gap); margin: 0; }
+  #detail-head { padding: var(--gap); border-bottom: 1px solid #8884; display: flex; gap: var(--gap); align-items: center; }
+  button { font: inherit; cursor: pointer; }
+  .muted { color: #888; }
+  dialog { font: inherit; }
+  label { display: block; margin: 0.4rem 0; }
+  input[type=text] { width: 100%; font: inherit; padding: 0.3rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>pz</h1>
+  <label class="muted"><input type="checkbox" id="show-all" /> show finished</label>
+  <span class="spacer"></span>
+  <span id="conn" class="muted"></span>
+  <button id="run-btn">run…</button>
+</header>
+<main>
+  <div id="list"><table><tbody id="rows"></tbody></table></div>
+  <div id="detail">
+    <div id="detail-head"><span class="muted">select a process</span></div>
+    <pre id="logs"></pre>
+  </div>
+</main>
+
+<dialog id="run-dialog">
+  <form method="dialog">
+    <h3>pz run</h3>
+    <label>name <input type="text" id="run-name" placeholder="optional" /></label>
+    <label>command <input type="text" id="run-cmd" placeholder="e.g. python3 -m http.server 8000" /></label>
+    <label><input type="checkbox" id="run-replace" /> replace if name exists</label>
+    <menu style="display:flex; gap:0.5rem; justify-content:flex-end;">
+      <button value="cancel">cancel</button>
+      <button id="run-submit" value="run">run</button>
+    </menu>
+  </form>
+</dialog>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let selected = null;
+let logCursor = null;
+let logTimer = null;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+function statusClass(s) { return "status-" + s.toLowerCase(); }
+
+async function refreshList() {
+  try {
+    const all = $("#show-all").checked;
+    const { processes } = await api(`/api/processes?all=${all}`);
+    $("#conn").textContent = "";
+    const rows = $("#rows");
+    rows.innerHTML = "";
+    for (const p of processes) {
+      const tr = document.createElement("tr");
+      tr.className = "proc" + (p.id === selected ? " selected" : "");
+      tr.innerHTML = `
+        <td>${p.id}</td>
+        <td>${p.name ?? "-"}</td>
+        <td class="${statusClass(p.status)}">${p.status}</td>
+        <td>${(p.ports && p.ports.length) ? p.ports.join(",") : (p.ports_unavailable ? "?" : "-")}</td>`;
+      tr.onclick = () => select(p.id);
+      rows.appendChild(tr);
+    }
+  } catch (e) {
+    $("#conn").textContent = "daemon unreachable: " + e.message;
+  }
+}
+
+async function select(id) {
+  selected = id;
+  logCursor = null;
+  $("#logs").textContent = "";
+  document.querySelectorAll("tr.proc").forEach(tr =>
+    tr.classList.toggle("selected", tr.firstChild.nextSibling)); // re-render below
+  refreshList();
+  await renderDetailHead(id);
+  pollLogs();
+}
+
+async function renderDetailHead(id) {
+  const head = $("#detail-head");
+  try {
+    const p = await api(`/api/processes/${id}`);
+    head.innerHTML = `<strong>${p.name ?? ("#" + p.id)}</strong>
+      <span class="${statusClass(p.status)}">${p.status}</span>
+      <span class="muted">${p.command.join(" ")}</span>
+      <span class="spacer" style="flex:1"></span>`;
+    if (p.status === "Running" || p.status === "Lost") {
+      const stop = document.createElement("button");
+      stop.textContent = "stop";
+      stop.onclick = () => act(`/api/processes/${id}/stop`, {});
+      head.appendChild(stop);
+    }
+    const restart = document.createElement("button");
+    restart.textContent = "restart";
+    restart.onclick = () => act(`/api/processes/${id}/restart`, {});
+    head.appendChild(restart);
+  } catch (e) {
+    head.textContent = "error: " + e.message;
+  }
+}
+
+async function act(path, body) {
+  try {
+    await api(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    refreshList();
+    if (selected) renderDetailHead(selected);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function pollLogs() {
+  if (logTimer) clearTimeout(logTimer);
+  if (selected === null) return;
+  const id = selected;
+  try {
+    const q = logCursor === null ? "?tail=200" : `?after_id=${logCursor}`;
+    const { lines, resume_after_id } = await api(`/api/processes/${id}/logs${q}`);
+    if (id !== selected) return;
+    logCursor = resume_after_id;
+    if (lines.length) {
+      const pre = $("#logs");
+      pre.textContent += lines.map(l => l.text).join("");
+      pre.scrollTop = pre.scrollHeight;
+    }
+  } catch (e) { /* keep polling */ }
+  logTimer = setTimeout(pollLogs, 1000);
+}
+
+$("#show-all").onchange = refreshList;
+$("#run-btn").onclick = () => $("#run-dialog").showModal();
+$("#run-submit").onclick = (e) => {
+  const cmd = $("#run-cmd").value.trim();
+  if (!cmd) return;
+  const name = $("#run-name").value.trim();
+  act("/api/run", {
+    name: name || null,
+    command: cmd.split(/\s+/),
+    replace: $("#run-replace").checked,
+  });
+};
+
+refreshList();
+setInterval(refreshList, 2000);
+</script>
+</body>
+</html>
