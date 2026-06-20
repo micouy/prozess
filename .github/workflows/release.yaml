@@ -21,6 +21,7 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,11 +29,20 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-latest
             archive: pz-linux-x86_64.tar.gz
+            container: ubuntu:20.04
           - name: macos-aarch64
             os: macos-14
             archive: pz-macos-aarch64.tar.gz
 
     steps:
+      - name: Install build dependencies
+        if: matrix.container
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git curl ca-certificates build-essential pkg-config python3
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -40,6 +50,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
