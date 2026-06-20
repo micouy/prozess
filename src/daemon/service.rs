@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -21,6 +22,11 @@ pub struct Service {
     supervisor: Supervisor,
     state: DaemonState,
     socket_path: String,
+    // Persistent across requests so CPU% can be diffed between successive
+    // resource queries (sysinfo computes it from the delta between two
+    // refreshes of the same System). The client's poll interval becomes
+    // the sampling window; idle when nobody queries.
+    cpu: Arc<Mutex<System>>,
 }
 
 impl Service {
@@ -35,6 +41,7 @@ impl Service {
             supervisor,
             state,
             socket_path,
+            cpu: Arc::new(Mutex::new(System::new())),
         }
     }
 
@@ -223,7 +230,21 @@ impl Service {
             return Ok(empty_resource_snapshot(details));
         }
 
-        let system = process_table();
+        // CPU% is a diff between two refreshes of the *same* System over
+        // the elapsed wall time, so the persistent handle is what makes it
+        // meaningful: its accuracy is the gap since the previous resources
+        // query. A polling client (the web UI) converges to the true value
+        // within a couple of polls; a cold one-shot reads low or 0, like
+        // top's first sample. `with_cpu()` is required — a plain
+        // refresh_processes does not collect per-process CPU time at all.
+        let mut system = self.cpu.lock().expect("cpu sampler poisoned");
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory(),
+        );
         let mut processes = Vec::new();
 
         for (pid, process) in system.processes() {
@@ -247,6 +268,7 @@ impl Service {
                 cpu_percent: process.cpu_usage(),
             });
         }
+        drop(system);
 
         processes.sort_by_key(|process| process.pid);
         let total_memory_bytes = processes.iter().map(|process| process.memory_bytes).sum();
