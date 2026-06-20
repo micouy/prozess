@@ -27,12 +27,32 @@ pub async fn list_processes(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    match send(&state, Request::ListProcesses { all: query.all }).await? {
-        PzResponse::ProcessList(processes) => {
-            Ok(Json(serde_json::json!({ "processes": processes })))
+    let processes = match send(&state, Request::ListProcesses { all: query.all }).await? {
+        PzResponse::ProcessList(processes) => processes,
+        other => return Err(ApiError::unexpected(other)),
+    };
+
+    // Resources are a separate per-process request (each a system scan),
+    // so fetch them only for running processes and merge into the row.
+    let mut rows = Vec::with_capacity(processes.len());
+    for process in processes {
+        let mut row = serde_json::to_value(&process).unwrap();
+        if process.status == crate::protocol::ProcessStatus::Running {
+            if let Ok(PzResponse::ResourceSnapshot(snapshot)) = state
+                .client
+                .send(Request::Resources {
+                    selector: ProcessSelector::Id(process.id),
+                })
+                .await
+            {
+                row["memory_bytes"] = snapshot.total_memory_bytes.into();
+                row["cpu_percent"] = snapshot.total_cpu_percent.into();
+            }
         }
-        other => Err(ApiError::unexpected(other)),
+        rows.push(row);
     }
+
+    Ok(Json(serde_json::json!({ "processes": rows })))
 }
 
 pub async fn show_process(

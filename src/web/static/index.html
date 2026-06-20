@@ -5,71 +5,162 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>pz</title>
 <style>
-  :root { color-scheme: light dark; --gap: 0.75rem; }
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --muted: #8b93a1;
+    --accent: #5b8cff;
+    --green: #43c478;
+    --amber: #e0a93b;
+    --red: #e5484d;
+    --radius: 10px;
+  }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    display: grid; grid-template-rows: auto 1fr; height: 100vh;
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
   }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
   header {
-    display: flex; align-items: center; gap: var(--gap);
-    padding: var(--gap); border-bottom: 1px solid #8884;
+    display: flex; align-items: center; gap: 1rem;
+    padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--border);
+    background: var(--panel);
   }
-  header h1 { font-size: 1rem; margin: 0; }
+  header .logo { font-weight: 700; letter-spacing: 0.5px; font-size: 1.05rem; }
+  header .logo span { color: var(--accent); }
   header .spacer { flex: 1; }
-  main { display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
-  #list { overflow-y: auto; border-right: 1px solid #8884; }
-  #detail { overflow: hidden; display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  .toggle { color: var(--muted); display: flex; align-items: center; gap: 0.4rem; cursor: pointer; user-select: none; }
+  .conn { color: var(--red); font-size: 0.85rem; }
+
+  .runbar {
+    display: flex; gap: 0.6rem; padding: 0.85rem 1.25rem;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .runbar input {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 0.55rem 0.8rem;
+  }
+  .runbar input.name { flex: 0 0 180px; }
+  .runbar input:focus { outline: none; border-color: var(--accent); }
+
+  main { flex: 1; display: grid; grid-template-columns: 1fr; min-height: 0; }
+  main.has-detail { grid-template-columns: 1fr 480px; }
+
+  .table-wrap { overflow: auto; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #8882; }
-  tr.proc { cursor: pointer; }
-  tr.proc.selected { background: #8883; }
-  .status-running { color: #2a2; }
-  .status-lost { color: #c80; }
-  .status-exited, .status-killed, .status-failed, .status-timed_out { color: #888; }
-  #logs { white-space: pre-wrap; overflow-y: auto; padding: var(--gap); margin: 0; }
-  #detail-head { padding: var(--gap); border-bottom: 1px solid #8884; display: flex; gap: var(--gap); align-items: center; }
-  button { font: inherit; cursor: pointer; }
-  .muted { color: #888; }
-  dialog { font: inherit; }
-  label { display: block; margin: 0.4rem 0; }
-  input[type=text] { width: 100%; font: inherit; padding: 0.3rem; }
+  thead th {
+    position: sticky; top: 0; background: var(--panel);
+    text-align: left; font-size: 0.72rem; letter-spacing: 0.6px;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+    padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel-2); }
+  tbody tr.selected { background: #232a3a; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .pill {
+    display: inline-block; padding: 0.12rem 0.55rem; border-radius: 999px;
+    font-size: 0.74rem; font-weight: 600;
+  }
+  .st-running { background: rgba(67,196,120,0.15); color: var(--green); }
+  .st-lost { background: rgba(224,169,59,0.15); color: var(--amber); }
+  .st-exited, .st-killed, .st-failed, .st-timed_out {
+    background: rgba(139,147,161,0.15); color: var(--muted);
+  }
+
+  .bar {
+    position: relative; height: 6px; border-radius: 3px; background: var(--panel-2);
+    width: 90px; overflow: hidden; display: inline-block; vertical-align: middle;
+  }
+  .bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+  .bar.mem > i { background: #7b61ff; }
+
+  button {
+    font: inherit; cursor: pointer; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text);
+    border-radius: 7px; padding: 0.35rem 0.7rem;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--red); }
+  button.danger:hover { border-color: var(--red); }
+  .row-actions { display: flex; gap: 0.4rem; }
+
+  aside {
+    border-left: 1px solid var(--border); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  aside .head {
+    padding: 0.85rem 1rem; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  aside .head .title { font-weight: 600; }
+  aside .head .spacer { flex: 1; }
+  aside .meta { padding: 0.6rem 1rem; color: var(--muted); font-size: 0.82rem; border-bottom: 1px solid var(--border); }
+  aside pre {
+    flex: 1; margin: 0; padding: 0.8rem 1rem; overflow: auto;
+    white-space: pre-wrap; word-break: break-word; font-size: 0.82rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #cfd4dd;
+  }
+  .close { color: var(--muted); }
+  .muted { color: var(--muted); }
 </style>
 </head>
 <body>
 <header>
-  <h1>pz</h1>
-  <label class="muted"><input type="checkbox" id="show-all" /> show finished</label>
+  <div class="logo">p<span>z</span></div>
+  <span class="conn" id="conn"></span>
   <span class="spacer"></span>
-  <span id="conn" class="muted"></span>
-  <button id="run-btn">run…</button>
+  <label class="toggle"><input type="checkbox" id="show-all" /> show finished</label>
 </header>
-<main>
-  <div id="list"><table><tbody id="rows"></tbody></table></div>
-  <div id="detail">
-    <div id="detail-head"><span class="muted">select a process</span></div>
-    <pre id="logs"></pre>
-  </div>
-</main>
 
-<dialog id="run-dialog">
-  <form method="dialog">
-    <h3>pz run</h3>
-    <label>name <input type="text" id="run-name" placeholder="optional" /></label>
-    <label>command <input type="text" id="run-cmd" placeholder="e.g. python3 -m http.server 8000" /></label>
-    <label><input type="checkbox" id="run-replace" /> replace if name exists</label>
-    <menu style="display:flex; gap:0.5rem; justify-content:flex-end;">
-      <button value="cancel">cancel</button>
-      <button id="run-submit" value="run">run</button>
-    </menu>
-  </form>
-</dialog>
+<div class="runbar">
+  <input class="name" id="run-name" placeholder="name (optional)" />
+  <input class="mono" id="run-cmd" placeholder="command to run, e.g. python3 -m http.server 8000" />
+  <label class="toggle"><input type="checkbox" id="run-replace" /> replace</label>
+  <button class="primary" id="run-btn">Run</button>
+</div>
+
+<main id="main">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:3rem">ID</th>
+          <th>Name</th>
+          <th style="width:7rem">Status</th>
+          <th style="width:8rem">Ports</th>
+          <th style="width:6rem">PID</th>
+          <th style="width:9rem">CPU</th>
+          <th style="width:11rem">Memory</th>
+          <th style="width:9rem"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <aside id="detail" style="display:none">
+    <div class="head">
+      <span class="title" id="detail-title"></span>
+      <span class="spacer"></span>
+      <button class="close" id="detail-close">✕</button>
+    </div>
+    <div class="meta mono" id="detail-meta"></div>
+    <pre id="logs"></pre>
+  </aside>
+</main>
 
 <script>
 const $ = (s) => document.querySelector(s);
-let selected = null;
-let logCursor = null;
-let logTimer = null;
+let selected = null, logCursor = null, logTimer = null, lastCpuMax = 100;
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -78,77 +169,91 @@ async function api(path, opts) {
   return body;
 }
 
-function statusClass(s) { return "status-" + s.toLowerCase(); }
+function fmtBytes(b) {
+  if (b == null) return "";
+  const u = ["B","KB","MB","GB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i === 0 ? b : b.toFixed(1)) + " " + u[i];
+}
+function bar(frac, cls) {
+  const pct = Math.max(0, Math.min(100, frac * 100));
+  return `<span class="bar ${cls||''}"><i style="width:${pct}%"></i></span>`;
+}
 
 async function refreshList() {
   try {
     const all = $("#show-all").checked;
     const { processes } = await api(`/api/processes?all=${all}`);
     $("#conn").textContent = "";
+    const maxMem = Math.max(1, ...processes.map(p => p.memory_bytes || 0));
     const rows = $("#rows");
     rows.innerHTML = "";
     for (const p of processes) {
       const tr = document.createElement("tr");
-      tr.className = "proc" + (p.id === selected ? " selected" : "");
+      if (p.id === selected) tr.className = "selected";
+      const running = p.status === "Running";
+      const ports = (p.ports && p.ports.length) ? p.ports.join(", ") : (p.ports_unavailable ? "?" : "—");
+      const cpu = (p.cpu_percent != null)
+        ? `${bar((p.cpu_percent||0)/100)} <span class="muted mono">${(p.cpu_percent||0).toFixed(0)}%</span>` : "";
+      const mem = (p.memory_bytes != null)
+        ? `${bar((p.memory_bytes||0)/maxMem, 'mem')} <span class="muted mono">${fmtBytes(p.memory_bytes)}</span>` : "";
       tr.innerHTML = `
-        <td>${p.id}</td>
-        <td>${p.name ?? "-"}</td>
-        <td class="${statusClass(p.status)}">${p.status}</td>
-        <td>${(p.ports && p.ports.length) ? p.ports.join(",") : (p.ports_unavailable ? "?" : "-")}</td>`;
+        <td class="num mono">${p.id}</td>
+        <td>${p.name ?? "—"}</td>
+        <td><span class="pill st-${p.status.toLowerCase()}">${p.status}</span></td>
+        <td class="mono">${ports}</td>
+        <td class="num mono">${p.pid ?? "—"}</td>
+        <td>${cpu}</td>
+        <td>${mem}</td>
+        <td></td>`;
+      const actions = document.createElement("div");
+      actions.className = "row-actions";
+      if (running || p.status === "Lost") {
+        const stop = document.createElement("button");
+        stop.className = "danger"; stop.textContent = "Stop";
+        stop.onclick = (e) => { e.stopPropagation(); act(`/api/processes/${p.id}/stop`, {}); };
+        actions.appendChild(stop);
+      }
+      const restart = document.createElement("button");
+      restart.textContent = "Restart";
+      restart.onclick = (e) => { e.stopPropagation(); act(`/api/processes/${p.id}/restart`, {}); };
+      actions.appendChild(restart);
+      tr.lastElementChild.appendChild(actions);
       tr.onclick = () => select(p.id);
       rows.appendChild(tr);
     }
   } catch (e) {
-    $("#conn").textContent = "daemon unreachable: " + e.message;
+    $("#conn").textContent = "daemon unreachable";
   }
 }
 
 async function select(id) {
-  selected = id;
-  logCursor = null;
+  selected = id; logCursor = null;
   $("#logs").textContent = "";
-  document.querySelectorAll("tr.proc").forEach(tr =>
-    tr.classList.toggle("selected", tr.firstChild.nextSibling)); // re-render below
+  $("#detail").style.display = "flex";
+  $("#main").classList.add("has-detail");
   refreshList();
-  await renderDetailHead(id);
+  try {
+    const p = await api(`/api/processes/${id}`);
+    $("#detail-title").textContent = p.name ?? ("#" + p.id);
+    $("#detail-meta").textContent = p.command.join(" ");
+  } catch (e) {}
   pollLogs();
 }
 
-async function renderDetailHead(id) {
-  const head = $("#detail-head");
-  try {
-    const p = await api(`/api/processes/${id}`);
-    head.innerHTML = `<strong>${p.name ?? ("#" + p.id)}</strong>
-      <span class="${statusClass(p.status)}">${p.status}</span>
-      <span class="muted">${p.command.join(" ")}</span>
-      <span class="spacer" style="flex:1"></span>`;
-    if (p.status === "Running" || p.status === "Lost") {
-      const stop = document.createElement("button");
-      stop.textContent = "stop";
-      stop.onclick = () => act(`/api/processes/${id}/stop`, {});
-      head.appendChild(stop);
-    }
-    const restart = document.createElement("button");
-    restart.textContent = "restart";
-    restart.onclick = () => act(`/api/processes/${id}/restart`, {});
-    head.appendChild(restart);
-  } catch (e) {
-    head.textContent = "error: " + e.message;
-  }
+function closeDetail() {
+  selected = null;
+  $("#detail").style.display = "none";
+  $("#main").classList.remove("has-detail");
+  if (logTimer) clearTimeout(logTimer);
+  refreshList();
 }
 
 async function act(path, body) {
   try {
-    await api(path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     refreshList();
-    if (selected) renderDetailHead(selected);
-  } catch (e) {
-    alert(e.message);
-  }
+  } catch (e) { alert(e.message); }
 }
 
 async function pollLogs() {
@@ -156,31 +261,32 @@ async function pollLogs() {
   if (selected === null) return;
   const id = selected;
   try {
-    const q = logCursor === null ? "?tail=200" : `?after_id=${logCursor}`;
+    const q = logCursor === null ? "?tail=300" : `?after_id=${logCursor}`;
     const { lines, resume_after_id } = await api(`/api/processes/${id}/logs${q}`);
     if (id !== selected) return;
     logCursor = resume_after_id;
     if (lines.length) {
       const pre = $("#logs");
+      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
       pre.textContent += lines.map(l => l.text).join("");
-      pre.scrollTop = pre.scrollHeight;
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
     }
-  } catch (e) { /* keep polling */ }
+  } catch (e) {}
   logTimer = setTimeout(pollLogs, 1000);
 }
 
-$("#show-all").onchange = refreshList;
-$("#run-btn").onclick = () => $("#run-dialog").showModal();
-$("#run-submit").onclick = (e) => {
+function submitRun() {
   const cmd = $("#run-cmd").value.trim();
   if (!cmd) return;
   const name = $("#run-name").value.trim();
-  act("/api/run", {
-    name: name || null,
-    command: cmd.split(/\s+/),
-    replace: $("#run-replace").checked,
-  });
-};
+  act("/api/run", { name: name || null, command: cmd.split(/\s+/), replace: $("#run-replace").checked });
+  $("#run-cmd").value = ""; $("#run-name").value = "";
+}
+
+$("#run-btn").onclick = submitRun;
+$("#run-cmd").addEventListener("keydown", (e) => { if (e.key === "Enter") submitRun(); });
+$("#show-all").onchange = refreshList;
+$("#detail-close").onclick = closeDetail;
 
 refreshList();
 setInterval(refreshList, 2000);
