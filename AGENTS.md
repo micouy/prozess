@@ -49,6 +49,12 @@ reader would get wrong without it.
 - In tests, comment only non-obvious setup or why an assertion expects a
   strange-looking value.
 
+## CI
+
+- The linux x86_64 release binary is built inside an `ubuntu:20.04` container
+  (glibc 2.31) so it runs on older systems. The macOS build runs natively on
+  `macos-14`. See `.github/workflows/release.yaml`.
+
 ## Verification
 
 - `cargo test` runs unit tests (in `src/`) and integration tests
