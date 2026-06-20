@@ -268,7 +268,6 @@ impl Service {
                 cpu_percent: process.cpu_usage(),
             });
         }
-        drop(system);
 
         processes.sort_by_key(|process| process.pid);
         let total_memory_bytes = processes.iter().map(|process| process.memory_bytes).sum();
