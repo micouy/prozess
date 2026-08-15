@@ -8,8 +8,7 @@ use crate::protocol::{
 };
 
 fn write_line<W: Write>(writer: &mut W, args: fmt::Arguments<'_>) -> Result<()> {
-    writeln!(writer, "{args}").context("failed to write output")?;
-    Ok(())
+    Ok(writeln!(writer, "{args}")?)
 }
 
 pub async fn follow_logs(
@@ -118,13 +117,11 @@ impl OutputPrinter {
 
             while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
                 let line = buffer.drain(..=newline).collect::<Vec<_>>();
-                stdout
-                    .write_all(format!("{label} | ").as_bytes())
-                    .context("failed to write output")?;
-                stdout.write_all(&line).context("failed to write output")?;
+                stdout.write_all(format!("{label} | ").as_bytes())?;
+                stdout.write_all(&line)?;
             }
         }
-        stdout.flush().context("failed to flush output")?;
+        stdout.flush()?;
 
         Ok(())
     }
@@ -163,15 +160,11 @@ impl OutputPrinter {
                 .get(&process_id)
                 .cloned()
                 .unwrap_or_else(|| format!("#{process_id}"));
-            stdout
-                .write_all(format!("{label} | ").as_bytes())
-                .context("failed to write output")?;
-            stdout
-                .write_all(&buffer)
-                .context("failed to write output")?;
-            stdout.write_all(b"\n").context("failed to write output")?;
+            stdout.write_all(format!("{label} | ").as_bytes())?;
+            stdout.write_all(&buffer)?;
+            stdout.write_all(b"\n")?;
         }
-        stdout.flush().context("failed to flush output")?;
+        stdout.flush()?;
 
         Ok(())
     }
@@ -387,10 +380,8 @@ fn format_bytes(bytes: u64) -> String {
 
 fn print_output<W: Write>(chunks: &[OutputChunk], stdout: &mut W) -> Result<()> {
     for chunk in chunks {
-        stdout
-            .write_all(&chunk.data)
-            .context("failed to write output")?;
-        stdout.flush().context("failed to flush output")?;
+        stdout.write_all(&chunk.data)?;
+        stdout.flush()?;
     }
 
     Ok(())
