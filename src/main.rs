@@ -6,7 +6,18 @@ use pz::cli::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    pz::client::run(parse_cli()).await
+    match pz::client::run(parse_cli()).await {
+        Err(error) if is_broken_pipe(&error) => Ok(()),
+        result => result,
+    }
+}
+
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe)
+    })
 }
 
 fn parse_cli() -> Cli {
