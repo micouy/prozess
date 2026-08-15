@@ -1,4 +1,4 @@
-use std::{fmt, io::Write};
+use std::io::Write;
 
 use anyhow::{Context, Result, bail};
 
@@ -6,10 +6,6 @@ use crate::client::Client;
 use crate::protocol::{
     OutputChunk, OutputStream, ProcessSelector, ProcessStatus, Request, Response,
 };
-
-fn write_line<W: Write>(writer: &mut W, args: fmt::Arguments<'_>) -> Result<()> {
-    Ok(writeln!(writer, "{args}")?)
-}
 
 pub async fn follow_logs(
     selector: Option<ProcessSelector>,
@@ -179,45 +175,33 @@ pub fn print_response(response: Result<Response>) -> Result<()> {
             socket,
             database,
         } => {
-            write_line(&mut stdout, format_args!("pz daemon running"))?;
-            write_line(&mut stdout, format_args!("pid: {pid}"))?;
-            write_line(&mut stdout, format_args!("socket: {socket}"))?;
-            write_line(&mut stdout, format_args!("db: {database}"))?;
+            writeln!(stdout, "pz daemon running")?;
+            writeln!(stdout, "pid: {pid}")?;
+            writeln!(stdout, "socket: {socket}")?;
+            writeln!(stdout, "db: {database}")?;
         }
-        Response::DaemonStopping => write_line(&mut stdout, format_args!("pz daemon stopped"))?,
+        Response::DaemonStopping => writeln!(stdout, "pz daemon stopped")?,
         Response::Spawned(process) => {
-            write_line(&mut stdout, format_args!("spawned process {}", process.id))?;
+            writeln!(stdout, "spawned process {}", process.id)?;
             if let Some(name) = process.name {
-                write_line(&mut stdout, format_args!("name: {name}"))?;
+                writeln!(stdout, "name: {name}")?;
             }
-            write_line(&mut stdout, format_args!("status: {}", process.status))?;
+            writeln!(stdout, "status: {}", process.status)?;
             if let Some(timeout_ms) = process.timeout_ms {
-                write_line(
-                    &mut stdout,
-                    format_args!("timeout: {}", format_duration_ms(timeout_ms)),
-                )?;
+                writeln!(stdout, "timeout: {}", format_duration_ms(timeout_ms))?;
             }
-            write_line(
-                &mut stdout,
-                format_args!("command: {}", process.command.join(" ")),
-            )?;
+            writeln!(stdout, "command: {}", process.command.join(" "))?;
         }
         Response::StoppedProcess { id, signal } => {
-            write_line(&mut stdout, format_args!("stopped process {id}"))?;
-            write_line(&mut stdout, format_args!("signal: {signal}"))?;
+            writeln!(stdout, "stopped process {id}")?;
+            writeln!(stdout, "signal: {signal}")?;
         }
         Response::TimeoutUpdated { id, timeout_ms } => {
             if let Some(timeout_ms) = timeout_ms {
-                write_line(&mut stdout, format_args!("timeout set for process {id}"))?;
-                write_line(
-                    &mut stdout,
-                    format_args!("timeout: {}", format_duration_ms(timeout_ms)),
-                )?;
+                writeln!(stdout, "timeout set for process {id}")?;
+                writeln!(stdout, "timeout: {}", format_duration_ms(timeout_ms))?;
             } else {
-                write_line(
-                    &mut stdout,
-                    format_args!("timeout cleared for process {id}"),
-                )?;
+                writeln!(stdout, "timeout cleared for process {id}")?;
             }
         }
         Response::WaitedProcess(process) => print_process_details(&process, &mut stdout)?,
@@ -235,49 +219,41 @@ pub fn print_response(response: Result<Response>) -> Result<()> {
 }
 
 fn print_ports<W: Write>(ports: &crate::protocol::PortList, stdout: &mut W) -> Result<()> {
-    write_line(stdout, format_args!("id: {}", ports.process_id))?;
+    writeln!(stdout, "id: {}", ports.process_id)?;
     if let Some(name) = &ports.name {
-        write_line(stdout, format_args!("name: {name}"))?;
+        writeln!(stdout, "name: {name}")?;
     }
-    write_line(stdout, format_args!("status: {}", ports.status))?;
+    writeln!(stdout, "status: {}", ports.status)?;
 
     if ports.status != ProcessStatus::Running {
-        write_line(
-            stdout,
-            format_args!("ports: unavailable for non-running process"),
-        )?;
+        writeln!(stdout, "ports: unavailable for non-running process")?;
         return Ok(());
     }
 
     if ports.unavailable {
-        write_line(stdout, format_args!("ports: unavailable"))?;
+        writeln!(stdout, "ports: unavailable")?;
         return Ok(());
     }
 
     if ports.ports.is_empty() {
-        write_line(stdout, format_args!("ports: none"))?;
+        writeln!(stdout, "ports: none")?;
         return Ok(());
     }
 
-    write_line(stdout, format_args!(""))?;
-    write_line(
-        stdout,
-        format_args!("{:<6} {:<8} {:<22} PIDS", "PROTO", "STATE", "LOCAL"),
-    )?;
+    writeln!(stdout)?;
+    writeln!(stdout, "{:<6} {:<8} {:<22} PIDS", "PROTO", "STATE", "LOCAL")?;
     for port in &ports.ports {
-        write_line(
+        writeln!(
             stdout,
-            format_args!(
-                "{:<6} {:<8} {:<22} {}",
-                port.protocol,
-                port.state,
-                format!("{}:{}", port.local_addr, port.local_port),
-                port.pids
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ),
+            "{:<6} {:<8} {:<22} {}",
+            port.protocol,
+            port.state,
+            format!("{}:{}", port.local_addr, port.local_port),
+            port.pids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
         )?;
     }
     Ok(())
@@ -287,76 +263,63 @@ fn print_resource_snapshot<W: Write>(
     snapshot: &crate::protocol::ResourceSnapshot,
     stdout: &mut W,
 ) -> Result<()> {
-    write_line(stdout, format_args!("id: {}", snapshot.process_id))?;
+    writeln!(stdout, "id: {}", snapshot.process_id)?;
     if let Some(name) = &snapshot.name {
-        write_line(stdout, format_args!("name: {name}"))?;
+        writeln!(stdout, "name: {name}")?;
     }
-    write_line(stdout, format_args!("status: {}", snapshot.status))?;
-    write_line(
+    writeln!(stdout, "status: {}", snapshot.status)?;
+    writeln!(
         stdout,
-        format_args!(
-            "pid: {}",
-            snapshot
-                .pid
-                .map(|pid| pid.to_string())
-                .unwrap_or_else(|| "-".to_owned())
-        ),
+        "pid: {}",
+        snapshot
+            .pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "-".to_owned())
     )?;
-    write_line(
+    writeln!(
         stdout,
-        format_args!(
-            "pgid: {}",
-            snapshot
-                .pgid
-                .map(|pgid| pgid.to_string())
-                .unwrap_or_else(|| "-".to_owned())
-        ),
+        "pgid: {}",
+        snapshot
+            .pgid
+            .map(|pgid| pgid.to_string())
+            .unwrap_or_else(|| "-".to_owned())
     )?;
 
     if snapshot.status != ProcessStatus::Running {
-        write_line(
-            stdout,
-            format_args!("resources: unavailable for non-running process"),
-        )?;
+        writeln!(stdout, "resources: unavailable for non-running process")?;
         return Ok(());
     }
 
-    write_line(
+    writeln!(stdout, "processes: {}", snapshot.process_count)?;
+    writeln!(
         stdout,
-        format_args!("processes: {}", snapshot.process_count),
+        "memory: {}",
+        format_bytes(snapshot.total_memory_bytes)
     )?;
-    write_line(
-        stdout,
-        format_args!("memory: {}", format_bytes(snapshot.total_memory_bytes)),
-    )?;
-    write_line(
-        stdout,
-        format_args!("cpu: {:.1}%", snapshot.total_cpu_percent),
-    )?;
+    writeln!(stdout, "cpu: {:.1}%", snapshot.total_cpu_percent)?;
 
     if snapshot.processes.is_empty() {
         return Ok(());
     }
 
-    write_line(stdout, format_args!(""))?;
-    write_line(
+    writeln!(stdout)?;
+    writeln!(
         stdout,
-        format_args!("{:<8} {:<8} {:<8} {:<10} NAME", "PID", "PPID", "CPU", "MEM"),
+        "{:<8} {:<8} {:<8} {:<10} NAME",
+        "PID", "PPID", "CPU", "MEM"
     )?;
     for process in &snapshot.processes {
-        write_line(
+        writeln!(
             stdout,
-            format_args!(
-                "{:<8} {:<8} {:<8} {:<10} {}",
-                process.pid,
-                process
-                    .parent_pid
-                    .map(|pid| pid.to_string())
-                    .unwrap_or_else(|| "-".to_owned()),
-                format!("{:.1}%", process.cpu_percent),
-                format_bytes(process.memory_bytes),
-                process.name,
-            ),
+            "{:<8} {:<8} {:<8} {:<10} {}",
+            process.pid,
+            process
+                .parent_pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            format!("{:.1}%", process.cpu_percent),
+            format_bytes(process.memory_bytes),
+            process.name,
         )?;
     }
     Ok(())
@@ -404,46 +367,31 @@ fn print_process_details<W: Write>(
         .map(|pgid| pgid.to_string())
         .unwrap_or_else(|| "-".to_owned());
 
-    write_line(stdout, format_args!("id: {}", process.id))?;
+    writeln!(stdout, "id: {}", process.id)?;
     if let Some(name) = &process.name {
-        write_line(stdout, format_args!("name: {name}"))?;
+        writeln!(stdout, "name: {name}")?;
     }
-    write_line(stdout, format_args!("status: {}", process.status))?;
-    write_line(stdout, format_args!("pid: {pid}"))?;
-    write_line(stdout, format_args!("pgid: {pgid}"))?;
-    write_line(stdout, format_args!("exit: {exit}"))?;
-    write_line(
-        stdout,
-        format_args!("command: {}", process.command.join(" ")),
-    )?;
-    write_line(stdout, format_args!("cwd: {}", process.cwd))?;
+    writeln!(stdout, "status: {}", process.status)?;
+    writeln!(stdout, "pid: {pid}")?;
+    writeln!(stdout, "pgid: {pgid}")?;
+    writeln!(stdout, "exit: {exit}")?;
+    writeln!(stdout, "command: {}", process.command.join(" "))?;
+    writeln!(stdout, "cwd: {}", process.cwd)?;
     if let Some(timeout_ms) = process.timeout_ms {
-        write_line(
-            stdout,
-            format_args!("timeout: {}", format_duration_ms(timeout_ms)),
-        )?;
+        writeln!(stdout, "timeout: {}", format_duration_ms(timeout_ms))?;
     }
-    write_line(
-        stdout,
-        format_args!("inherit env: {}", process.env.inherit_env),
-    )?;
+    writeln!(stdout, "inherit env: {}", process.env.inherit_env)?;
 
     if !process.env.env_files.is_empty() {
-        write_line(
-            stdout,
-            format_args!("env files: {}", process.env.env_files.join(", ")),
-        )?;
+        writeln!(stdout, "env files: {}", process.env.env_files.join(", "))?;
     }
 
     if !process.env.env_keys.is_empty() {
-        write_line(
-            stdout,
-            format_args!("env overrides: {}", process.env.env_keys.join(", ")),
-        )?;
+        writeln!(stdout, "env overrides: {}", process.env.env_keys.join(", "))?;
     }
 
     if let Some(error) = &process.error_message {
-        write_line(stdout, format_args!("error: {error}"))?;
+        writeln!(stdout, "error: {error}")?;
     }
     Ok(())
 }
@@ -452,12 +400,10 @@ fn print_process_list<W: Write>(
     processes: &[crate::protocol::ProcessSummary],
     stdout: &mut W,
 ) -> Result<()> {
-    write_line(
+    writeln!(
         stdout,
-        format_args!(
-            "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} COMMAND / ERROR",
-            "ID", "NAME", "STATUS", "PORTS", "PID", "EXIT"
-        ),
+        "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} COMMAND / ERROR",
+        "ID", "NAME", "STATUS", "PORTS", "PID", "EXIT"
     )?;
 
     for process in processes {
@@ -476,18 +422,16 @@ fn print_process_list<W: Write>(
             process.command.join(" ")
         };
 
-        write_line(
+        writeln!(
             stdout,
-            format_args!(
-                "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} {}",
-                process.id,
-                process.name.as_deref().unwrap_or("-"),
-                process.status,
-                format_ports(process.ports_unavailable, &process.ports),
-                pid,
-                exit,
-                command
-            ),
+            "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} {}",
+            process.id,
+            process.name.as_deref().unwrap_or("-"),
+            process.status,
+            format_ports(process.ports_unavailable, &process.ports),
+            pid,
+            exit,
+            command
         )?;
     }
     Ok(())
