@@ -7,6 +7,15 @@ use crate::protocol::{
     OutputChunk, OutputStream, ProcessSelector, ProcessStatus, Request, Response,
 };
 
+macro_rules! println {
+    ($($arg:tt)*) => {
+        check_stdout_write(
+            writeln!(std::io::stdout().lock(), $($arg)*),
+            "failed to write output",
+        )?
+    };
+}
+
 pub async fn follow_logs(
     selector: Option<ProcessSelector>,
     stream: OutputStream,
@@ -207,11 +216,11 @@ pub fn print_response(response: Result<Response>) -> Result<()> {
                 println!("timeout cleared for process {id}");
             }
         }
-        Response::WaitedProcess(process) => print_process_details(&process),
-        Response::ProcessList(processes) => print_process_list(&processes),
-        Response::ProcessDetails(process) => print_process_details(&process),
-        Response::ResourceSnapshot(snapshot) => print_resource_snapshot(&snapshot),
-        Response::PortList(ports) => print_ports(&ports),
+        Response::WaitedProcess(process) => print_process_details(&process)?,
+        Response::ProcessList(processes) => print_process_list(&processes)?,
+        Response::ProcessDetails(process) => print_process_details(&process)?,
+        Response::ResourceSnapshot(snapshot) => print_resource_snapshot(&snapshot)?,
+        Response::PortList(ports) => print_ports(&ports)?,
         Response::Output { chunks, .. } => {
             print_output(&chunks)?;
         }
@@ -221,7 +230,7 @@ pub fn print_response(response: Result<Response>) -> Result<()> {
     Ok(())
 }
 
-fn print_ports(ports: &crate::protocol::PortList) {
+fn print_ports(ports: &crate::protocol::PortList) -> Result<()> {
     println!("id: {}", ports.process_id);
     if let Some(name) = &ports.name {
         println!("name: {name}");
@@ -230,17 +239,17 @@ fn print_ports(ports: &crate::protocol::PortList) {
 
     if ports.status != ProcessStatus::Running {
         println!("ports: unavailable for non-running process");
-        return;
+        return Ok(());
     }
 
     if ports.unavailable {
         println!("ports: unavailable");
-        return;
+        return Ok(());
     }
 
     if ports.ports.is_empty() {
         println!("ports: none");
-        return;
+        return Ok(());
     }
 
     println!();
@@ -258,9 +267,10 @@ fn print_ports(ports: &crate::protocol::PortList) {
                 .join(","),
         );
     }
+    Ok(())
 }
 
-fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) {
+fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) -> Result<()> {
     println!("id: {}", snapshot.process_id);
     if let Some(name) = &snapshot.name {
         println!("name: {name}");
@@ -283,7 +293,7 @@ fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) {
 
     if snapshot.status != ProcessStatus::Running {
         println!("resources: unavailable for non-running process");
-        return;
+        return Ok(());
     }
 
     println!("processes: {}", snapshot.process_count);
@@ -291,7 +301,7 @@ fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) {
     println!("cpu: {:.1}%", snapshot.total_cpu_percent);
 
     if snapshot.processes.is_empty() {
-        return;
+        return Ok(());
     }
 
     println!();
@@ -309,6 +319,7 @@ fn print_resource_snapshot(snapshot: &crate::protocol::ResourceSnapshot) {
             process.name,
         );
     }
+    Ok(())
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -348,7 +359,7 @@ fn print_output(chunks: &[OutputChunk]) -> Result<()> {
     Ok(())
 }
 
-fn print_process_details(process: &crate::protocol::ProcessDetails) {
+fn print_process_details(process: &crate::protocol::ProcessDetails) -> Result<()> {
     let pid = process
         .pid
         .map(|pid| pid.to_string())
@@ -388,9 +399,10 @@ fn print_process_details(process: &crate::protocol::ProcessDetails) {
     if let Some(error) = &process.error_message {
         println!("error: {error}");
     }
+    Ok(())
 }
 
-fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
+fn print_process_list(processes: &[crate::protocol::ProcessSummary]) -> Result<()> {
     println!(
         "{:<3} {:<16} {:<12} {:<12} {:<6} {:<5} COMMAND / ERROR",
         "ID", "NAME", "STATUS", "PORTS", "PID", "EXIT"
@@ -423,6 +435,7 @@ fn print_process_list(processes: &[crate::protocol::ProcessSummary]) {
             command
         );
     }
+    Ok(())
 }
 
 fn format_ports(unavailable: bool, ports: &[u16]) -> String {

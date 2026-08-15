@@ -5,6 +5,30 @@ use assert_cmd::cargo::cargo_bin;
 use tempfile::tempdir;
 
 #[test]
+fn ps_exits_cleanly_when_stdout_consumer_closes() -> Result<()> {
+    let runtime_dir = tempdir()?;
+    let state_dir = tempdir()?;
+    let binary = cargo_bin("pz");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "start"])?;
+
+    let mut ps = Command::new(&binary)
+        .args(["ps", "--all"])
+        .env("PZ_RUNTIME_DIR", runtime_dir.path())
+        .env("PZ_STATE_DIR", state_dir.path())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn pz ps")?;
+    drop(ps.stdout.take());
+
+    let status = ps.wait()?;
+    assert!(status.success(), "pz ps failed with {status}");
+
+    run_pz(&binary, &runtime_dir, &state_dir, &["daemon", "stop"])?;
+    Ok(())
+}
+
+#[test]
 fn config_env_is_applied_at_spawn_and_restartable() -> Result<()> {
     let runtime_dir = tempdir()?;
     let state_dir = tempdir()?;
